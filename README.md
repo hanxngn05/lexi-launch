@@ -1,6 +1,7 @@
-**SpatioSense**
+SpatioSense
 
-A minimal guide to get the app running for the first time (not including the server).
+**A minimal guide to get the app running for the first time (not including the server).**
+
 ----------------------------------------------------
 Prerequisites
 - Node 18+ and npm
