@@ -2,6 +2,8 @@
 
 # dependencies
 node_modules/
+/ios
+/android
 
 # Expo
 .expo/
@@ -32,8 +34,24 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env
 
 # typescript
 *.tsbuildinfo
 
+# Python server
+__pycache__/
+.venv/
+venv/
+*.pyc
+flask.out
+latest_query_time.txt
+*.lock
+
+# Data/runtime artifacts (JS route handlers)
+data/
+
+# Project examples
 app-example
+
+# @end expo-cli

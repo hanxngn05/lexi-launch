@@ -5,18 +5,65 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "lexi",
+    "scheme": "com.hanxngn.lexi",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hanxngn.lexi",
+      "config": {
+        "googleMapsApiKey": "AIzaSyDGa8GbaC9fsSExYXOe1oFOzOOCAh5SCT4"
+      },
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsArbitraryLoadsInWebContent": true,
+          "NSExceptionDomains": {
+            "10.155.6.92": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSExceptionMinimumTLSVersion": "1.0",
+              "NSExceptionRequiresForwardSecrecy": false,
+              "NSIncludesSubdomains": true,
+              "NSExceptionAllowsInsecureHTTPSLoads": true
+            }
+          }
+        },
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to upload images for workspace responses.",
+        "NSCameraUsageDescription": "This app needs access to your camera to capture images for workspace responses.",
+        "NSLocationWhenInUseUsageDescription": "This app needs access to your location to show your position on the map.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to your location to show your position on the map."
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.hanxngn.lexi",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDGa8GbaC9fsSExYXOe1oFOzOOCAh5SCT4"
+        }
+      },
+      "networkSecurityConfig": {
+        "cleartextTrafficPermitted": true
+      },
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.CAMERA"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -26,17 +73,33 @@
     "plugins": [
       "expo-router",
       [
-        "expo-splash-screen",
+        "expo-location",
         {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "locationAlwaysAndWhenInUsePermission": "Allow Lexi to use your location."
         }
-      ]
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "This app needs access to your photos to let you upload images for workspace responses.",
+          "cameraPermission": "This app needs access to your camera to capture images for workspace responses."
+        }
+      ],
+      "expo-web-browser",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "baseUrl": "http://localhost:8081",
+      "jwtSecret": "expo_is_the_best",
+      "googleClientId": "1029128656486-6opcvti4ujfk0tddoi12kba545tm62gr.apps.googleusercontent.com",
+      "googleClientSecret": "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",
+      "router": {},
+      "eas": {
+        "projectId": "1fa1d659-5a94-4538-a713-a98ef81dec10"
+      }
     }
   }
 }
