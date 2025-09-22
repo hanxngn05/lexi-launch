@@ -1,4 +1,5 @@
 **SpatioSense**
+
 A minimal guide to get the app running for the first time (not including the server).
 ----------------------------------------------------
 Prerequisites
@@ -8,6 +9,17 @@ Prerequisites
 Project structure
 - React Native app (Expo) lives in this repo
 - Python Flask server lives in `server.py` (server desktop)
+
+App output: The app is currently configured to run in development build
+
+Files for server:
+* database_utils.py
+* gemini.py
+* server.py
+* sentiment_analysis.py
+* task_assignment.py
+* task_config.py
+* task_creation.py
 
 1) Install app dependencies
 ```
