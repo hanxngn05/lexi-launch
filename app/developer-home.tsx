@@ -28,6 +28,23 @@ export default function DeveloperHome() {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [fadeAnim] = useState(new Animated.Value(0));
   const [slideAnim] = useState(new Animated.Value(50));
+  // In Lexi-only mode, redirect if this screen is visited
+  useEffect(() => {
+    const go = async () => {
+      try {
+        const data = await api.getWorkspaces();
+        const lexiWorkspace = (data?.workspaces || []).find((ws: any) =>
+          typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
+        );
+        if (lexiWorkspace?.id) {
+          router.replace(`/workspace/${lexiWorkspace.id}`);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+    go();
+  }, [router]);
 
   const [fontsLoaded] = useFonts({
     Poppins_400Regular,

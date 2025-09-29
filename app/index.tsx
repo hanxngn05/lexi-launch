@@ -1,9 +1,32 @@
 import LoginForm from "@/components/LoginForm";
 import { useAuth } from "@/context/auth";
+import { api } from "@/utils/api";
+import { useRouter } from "expo-router";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { useEffect } from "react";
 
 export default function Index() {
   const { user, isLoading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    const redirectIfLoggedIn = async () => {
+      if (user) {
+        try {
+          const workspacesData: any = await api.getWorkspaces();
+          const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
+            typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
+          );
+          if (lexiWorkspace?.id) {
+            router.replace(`/workspace/${lexiWorkspace.id}`);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    };
+    redirectIfLoggedIn();
+  }, [user, router]);
 
   if (isLoading) {
     return (

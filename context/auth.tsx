@@ -178,18 +178,24 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
       getUserInfo(code)
         .then(userData => {
           setUser(userData);
-
-          // Reduce delay for faster navigation
-          setTimeout(() => {
-            if (!userData.role) {
-              // New user - send to onboarding
-              router.replace('/onboarding');
-            } else if (userData.role === 'developer') {
-              router.replace('/developer-home');
-            } else {
-              router.replace('/home');
+          // Navigate directly to the Lexi workspace if available
+          const goToLexi = async () => {
+            try {
+              const workspacesData: any = await api.getWorkspaces();
+              const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
+                typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
+              );
+              if (lexiWorkspace?.id) {
+                router.replace(`/workspace/${lexiWorkspace.id}`);
+                return;
+              }
+            } catch (e) {
+              console.error('Failed to locate Lexi workspace:', e);
             }
-          }, 50); // Reduced from 100ms to 50ms
+            // Fallback if Lexi workspace couldn't be found
+            router.replace('/home');
+          };
+          setTimeout(goToLexi, 50);
         })
         .catch(error => {
           console.error('Auth error:', error);
@@ -225,6 +231,19 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
     };
 
     setUser(mockUser);
+    // After mock sign-in, route to Lexi workspace if available
+    try {
+      const workspacesData: any = await api.getWorkspaces();
+      const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
+        typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
+      );
+      if (lexiWorkspace?.id) {
+        router.replace(`/workspace/${lexiWorkspace.id}`);
+        return;
+      }
+    } catch (e) {
+      console.error('Failed to locate Lexi workspace after mock sign-in:', e);
+    }
     router.replace('/home');
   };
 

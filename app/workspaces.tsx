@@ -1,6 +1,6 @@
 import { api } from '@/utils/api';
-import { Poppins_400Regular, Poppins_600SemiBold, useFonts } from '@expo-google-fonts/poppins';
 import { useRouter } from 'expo-router';
+import { Poppins_400Regular, Poppins_600SemiBold, useFonts } from '@expo-google-fonts/poppins';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
@@ -19,6 +19,24 @@ export default function WorkspacesScreen() {
       setLoading(false);
     });
   }, []);
+
+  // In Lexi-only mode, redirect this screen to the Lexi workspace
+  useEffect(() => {
+    const go = async () => {
+      try {
+        const data = await api.getWorkspaces();
+        const lexiWorkspace = (data?.workspaces || []).find((ws: any) =>
+          typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
+        );
+        if (lexiWorkspace?.id) {
+          router.replace(`/workspace/${lexiWorkspace.id}`);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+    go();
+  }, [router]);
 
   if (!fontsLoaded || loading) {
     return (

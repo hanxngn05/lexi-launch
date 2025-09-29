@@ -403,7 +403,8 @@ export default function WorkspaceScreen() {
   };
 
   const handleBackToHome = () => {
-    router.push('/home');
+    // Stay within current workspace instead of routing to a general home
+    router.replace(`/workspace/${id}`);
   };
 
   const handleMapPress = (event: MapPressEvent) => {
@@ -729,7 +730,7 @@ export default function WorkspaceScreen() {
     <View style={styles.mapContainer}>
       {/* Enhanced Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.push('/home')}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.replace(`/workspace/${id}`)}>
           <Ionicons name="arrow-back" size={20} color="#4A90E2" />
           <Text style={styles.backButtonText}>Back</Text>
         </TouchableOpacity>
@@ -747,7 +748,7 @@ export default function WorkspaceScreen() {
 
       {/* Go Back to Home Screen Button */}
       <View style={styles.homeButtonContainer}>
-        <TouchableOpacity style={styles.homeButton} onPress={() => router.push('/home')}>
+        <TouchableOpacity style={styles.homeButton} onPress={() => router.replace(`/workspace/${id}`)}>
           <Ionicons name="home" size={20} color="#FFFFFF" />
           {/* <Text style={styles.homeButtonText}>Home</Text> */}
         </TouchableOpacity>

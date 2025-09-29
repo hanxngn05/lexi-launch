@@ -53,6 +53,24 @@ export default function Home() {
     loadAll();
   }, []);
 
+  // In Lexi-only mode, redirect this screen straight into the Lexi workspace
+  useEffect(() => {
+    const redirectToLexi = async () => {
+      try {
+        const workspacesData: any = await api.getWorkspaces();
+        const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
+          typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
+        );
+        if (lexiWorkspace?.id) {
+          router.replace(`/workspace/${lexiWorkspace.id}`);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+    redirectToLexi();
+  }, [router]);
+
   useEffect(() => {
     if (fontsLoaded) {
       Animated.parallel([
