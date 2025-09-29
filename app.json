@@ -1,5 +1,8 @@
 {
   "expo": {
+    "runtimeVersion": {
+      "policy": "sdkVersion"
+    },
     "name": "lexi",
     "slug": "lexi",
     "version": "1.0.0",
@@ -97,6 +100,7 @@
       "googleClientId": "1029128656486-6opcvti4ujfk0tddoi12kba545tm62gr.apps.googleusercontent.com",
       "googleClientSecret": "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",
       "router": {},
+      "serverUrl": "http://10.155.6.92:5000",
       "eas": {
         "projectId": "1fa1d659-5a94-4538-a713-a98ef81dec10"
       }

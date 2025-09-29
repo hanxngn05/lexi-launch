@@ -1,7 +1,8 @@
 import { Alert } from 'react-native';
+import Constants from 'expo-constants';
 
-// server desktop - HTTP for development
-const SERVER_URL = 'http://10.155.6.92:5000';
+// Resolve server URL from app config (EAS Update friendly); fallback to local dev
+const SERVER_URL = ((Constants?.expoConfig as any)?.extra?.serverUrl) || 'http://10.155.6.92:5000';
 
 // Add request caching for better performance
 const cache = new Map();
