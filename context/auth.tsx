@@ -43,16 +43,16 @@ const AuthContext = React.createContext<AuthContextType>({
   error: null,
 });
 
+// Use Expo AuthSession proxy so Google sign-in works inside Expo Go
+const redirectUri = (makeRedirectUri as any)({ useProxy: true });
 const config: AuthRequestConfig = {
   clientId: "1029128656486-sj55218ijb6k0lgi77mhgc995rlvctpq.apps.googleusercontent.com",
   scopes: ["openid", "profile", "email"],
-  redirectUri: "com.hanxngn.lexi://",
+  redirectUri,
   usePKCE: true,
 };
 
-console.log("Using redirect URI:", makeRedirectUri({
-  scheme: 'com.hanxngn.lexi'
-}));
+console.log("Using redirect URI:", redirectUri);
 
 const discovery: DiscoveryDocument = {
   authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -215,7 +215,7 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
       if (!request) {
         return;
       }
-      await promptAsync();
+      await (promptAsync as any)({ useProxy: true });
     }
     catch (e) {
       console.log(e)

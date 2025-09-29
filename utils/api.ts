@@ -1,5 +1,5 @@
-import { Alert } from 'react-native';
 import Constants from 'expo-constants';
+import { Alert } from 'react-native';
 
 // Resolve server URL from app config (EAS Update friendly); fallback to local dev
 const SERVER_URL = ((Constants?.expoConfig as any)?.extra?.serverUrl) || 'http://10.155.6.92:5000';
