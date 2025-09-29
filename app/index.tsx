@@ -2,8 +2,8 @@ import LoginForm from "@/components/LoginForm";
 import { useAuth } from "@/context/auth";
 import { api } from "@/utils/api";
 import { useRouter } from "expo-router";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { useEffect } from "react";
+import { ActivityIndicator, StyleSheet, View } from "react-native";
 
 export default function Index() {
   const { user, isLoading } = useAuth();
