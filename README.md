@@ -36,3 +36,4 @@ Step 1: Start the app
 npx expo start
 ```
 Step 2: To open IOS simulator, enter ```i``` in the terminal once you see a Barcode.
+# lexi-launch
