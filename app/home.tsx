@@ -8,16 +8,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    Dimensions,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Dimensions,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 const { width } = Dimensions.get('window');
@@ -53,22 +53,10 @@ export default function Home() {
     loadAll();
   }, []);
 
-  // In Lexi-only mode, redirect this screen straight into the Lexi workspace
+  // In Lexi-only mode, do not fetch workspaces or redirect to a workspace
   useEffect(() => {
-    const redirectToLexi = async () => {
-      try {
-        const workspacesData: any = await api.getWorkspaces();
-        const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
-          typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
-        );
-        if (lexiWorkspace?.id) {
-          router.replace(`/workspace/${lexiWorkspace.id}`);
-        }
-      } catch (e) {
-        // ignore
-      }
-    };
-    redirectToLexi();
+    const noop = async () => {};
+    noop();
   }, [router]);
 
   useEffect(() => {
@@ -95,44 +83,17 @@ export default function Home() {
     }
   }, [user]);
 
-  // Update joinedWorkspaces whenever user or workspaces change
+  // Update joinedWorkspaces whenever user or workspaces change (no-op in Lexi-only)
   useEffect(() => {
-    if (user && workspaces.length > 0) {
-      let userWorkspaces = (user as any).workspaces;
-      if (typeof userWorkspaces === 'string') {
-        try {
-          userWorkspaces = JSON.parse(userWorkspaces);
-        } catch {
-          userWorkspaces = [];
-        }
-      }
-      if (!Array.isArray(userWorkspaces)) userWorkspaces = [];
-      userWorkspaces = userWorkspaces.map(String); // ensure all are strings
-      setJoinedWorkspaces(workspaces.filter((ws: any) => userWorkspaces.includes(String(ws.id))));
-    } else {
-      setJoinedWorkspaces([]);
-    }
+    setJoinedWorkspaces([]);
   }, [user, workspaces]);
 
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [workspacesData] = await Promise.all([
-        api.getWorkspaces(),
-      ]);
-      setWorkspaces(workspacesData.workspaces || []);
-
-      // Load user's joined workspaces from database
-      if (user && user.workspaces) {
-        const userWorkspaces = Array.isArray(user.workspaces) ? user.workspaces : [];
-        const joinedWorkspacesList = workspacesData.workspaces?.filter((ws: any) =>
-          userWorkspaces.includes(ws.id)
-        ) || [];
-        setJoinedWorkspaces(joinedWorkspacesList);
-        console.log('[DEBUG] Loaded joined workspaces:', joinedWorkspacesList);
-      } else {
-        setJoinedWorkspaces([]);
-      }
+      // Lexi-only: no workspaces to fetch
+      setWorkspaces([]);
+      setJoinedWorkspaces([]);
     } catch (error) {
       console.error('Error loading data:', error);
       setWorkspaces([]);
@@ -318,7 +279,7 @@ export default function Home() {
 
   // Only show workspaces the user has not joined
   const availableToJoin = workspaces.filter(
-    (ws: any) => !(user && Array.isArray((user as any).workspaces) && (user as any).workspaces.includes(ws.id))
+    (ws: any) => false
   );
 
   if (!fontsLoaded || loading) {
@@ -410,94 +371,26 @@ export default function Home() {
 
         <ScrollView style={styles.scrollContainer} showsVerticalScrollIndicator={false}>
           {/* Joined Workspaces Section */}
-          {joinedWorkspaces.length > 0 && (
+          {false && (
             <Animated.View style={[styles.section, { opacity: fadeAnim }]}>
               <View style={styles.sectionHeader}>
                 <Ionicons name="people-circle-outline" size={24} color="#4A90E2" />
                 <Text style={styles.sectionTitle}>Your Workspaces</Text>
               </View>
-              {joinedWorkspaces.map((workspace, index) => (
-                <Animated.View
-                  key={workspace.id || `joined-${index}`}
-                  style={[
-                    styles.workspaceCard,
-                    styles.joinedCard,
-                    {
-                      opacity: fadeAnim,
-                      transform: [{ translateY: slideAnim }],
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <View style={styles.workspaceIcon}>
-                      <Ionicons name="business-outline" size={20} color="#4A90E2" />
-                    </View>
-                    <View style={styles.workspaceInfo}>
-                      <Text style={styles.workspaceName}>{workspace.name}</Text>
-                      <Text style={styles.workspaceDescription}>{workspace.description}</Text>
-                    </View>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.enterButton}
-                    onPress={() => handleEnterWorkspace(workspace)}
-                  >
-                    <Ionicons name="arrow-forward" size={16} color="#4A90E2" />
-                    <Text style={styles.enterButtonText}>Enter Workspace</Text>
-                  </TouchableOpacity>
-                </Animated.View>
-              ))}
             </Animated.View>
           )}
 
           {/* Available Workspaces Section */}
-          <Animated.View style={[styles.section, { opacity: fadeAnim }]}>
-            <View style={styles.sectionHeader}>
-              <Ionicons name="add-circle-outline" size={24} color="#4A90E2" />
-              <Text style={styles.sectionTitle}>
-                {availableToJoin.length > 0 ? 'Available to Join' : 'No Workspaces to Join'}
-              </Text>
-            </View>
-            {availableToJoin.length === 0 ? (
-              <Animated.View style={[styles.emptyContainer, { opacity: fadeAnim }]}>
-                <View style={styles.emptyIcon}>
-                  <Ionicons name="checkmark-circle-outline" size={48} color="#4A90E2" />
-                </View>
-                <Text style={styles.emptyText}>All caught up!</Text>
-                <Text style={styles.emptySubText}>You've joined all available communities.</Text>
-              </Animated.View>
-            ) : (
-              availableToJoin.map((workspace, index) => (
-                <Animated.View
-                  key={workspace.id || `available-${index}`}
-                  style={[
-                    styles.workspaceCard,
-                    styles.availableCard,
-                    {
-                      opacity: fadeAnim,
-                      transform: [{ translateY: slideAnim }],
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <View style={styles.workspaceIcon}>
-                      <Ionicons name="business-outline" size={20} color="#4A90E2" />
-                    </View>
-                    <View style={styles.workspaceInfo}>
-                      <Text style={styles.workspaceName}>{workspace.name}</Text>
-                      <Text style={styles.workspaceDescription}>{workspace.description}</Text>
-                    </View>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.joinButton}
-                    onPress={() => handleJoinWorkspace(workspace)}
-                  >
-                    <Ionicons name="add-circle-outline" size={16} color="#FFFFFF" />
-                    <Text style={styles.joinButtonText}>Join Workspace</Text>
-                  </TouchableOpacity>
-                </Animated.View>
-              ))
-            )}
-          </Animated.View>
+          {false && (
+            <Animated.View style={[styles.section, { opacity: fadeAnim }]}>
+              <View style={styles.sectionHeader}>
+                <Ionicons name="add-circle-outline" size={24} color="#4A90E2" />
+                <Text style={styles.sectionTitle}>
+                  {'Available to Join'}
+                </Text>
+              </View>
+            </Animated.View>
+          )}
         </ScrollView>
 
         <TasksDrawer

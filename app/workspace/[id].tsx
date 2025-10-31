@@ -1,11 +1,9 @@
-import TasksForm from '@/components/TasksForm';
-import TypoDetectingTextInput from '@/components/TypoDetectingTextInput';
+// import TasksForm from '@/components/TasksForm';
 import { AREA_COORDINATES } from '@/constants/areaCoordinates';
 import { useAuth } from '@/context/auth';
-import { api, makeRequest } from '@/utils/api';
+import { api } from '@/utils/api';
 import { Poppins_400Regular, Poppins_600SemiBold, useFonts } from '@expo-google-fonts/poppins';
 import { Ionicons } from '@expo/vector-icons';
-import { Picker } from '@react-native-picker/picker';
 import { Audio } from 'expo-av';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -16,6 +14,7 @@ import {
   Animated,
   Easing,
   Image,
+  Keyboard,
   Linking,
   Modal,
   Platform,
@@ -26,11 +25,48 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View
 } from 'react-native';
 import MapView, { MapPressEvent, Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+// Lexi form constants (mirror server expectations)
+const LEXI_AREAS_LIST = [
+  "The Quint (Beebe, Cazenove, Pomeroy, Shafer, Munger)",
+  "East Side (Bates, Freeman, McAfee)",
+  "Stone Davis",
+  "Tower Court (East, West, Claflin, Severance)",
+  "Academic Quad (Green, Founders, PNE/PNW, Jewett)",
+  "Science Center",
+  "Modular Units",
+  "Lulu Chow Wang Campus Center",
+  "Keohane Sports Center (KSC)",
+  "Acorns",
+  "Billings",
+  "Harambee House",
+  "Slater House",
+  "Lake House",
+  "On the Local Motion (‘What time do you take the bus?’)",
+  "Bus stops (Chapel, Lulu, Founders)",
+  "Shakespeare Houses",
+  "TZE House",
+  "ZA House",
+  "French House",
+  "Casa Cervantes",
+  "Other",
+];
+
+const DETERMINATION_OPTIONS = [
+  "I am a speaker of this language",
+  "I’ve heard this language online or in media (movies, TV, music, etc.)",
+  "My family speaks this language",
+  "I’m currently learning this language",
+  "My friends use this language",
+  "I know a language in the same family (eg. romance)",
+  "Other",
+];
 
 // This is the initial structure for a new workspace file
 const initialWorkspaceStructure = (id: string, user: any) => ({
@@ -60,19 +96,19 @@ export default function WorkspaceScreen() {
   const [workspaceInfo, setWorkspaceInfo] = useState<any>(null);
   const [markers, setMarkers] = useState<any[]>([]); // User-generated pins
   const [loading, setLoading] = useState(true);
-  const [hasJoined, setHasJoined] = useState(false); // Does the user exist in users.json?
   const [refreshing, setRefreshing] = useState(false);
   const [mapReady, setMapReady] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
 
   const [fontsLoaded] = useFonts({
     Poppins_400Regular,
     Poppins_600SemiBold,
   });
 
-  const [onboardingVisible, setOnboardingVisible] = useState(false);
+  // Simplified: no onboarding/join flow in Lexi-only mode
   const [isMapRecording, setIsMapRecording] = useState(false);
 
-  const { user, setUser } = useAuth();
+  const { user, setUser, signOut } = useAuth();
 
   // MAP STATE AND LOGIC
   const mapRef = useRef<MapView>(null);
@@ -97,18 +133,57 @@ export default function WorkspaceScreen() {
   const [conversationTopic, setConversationTopic] = useState('');
   const [step, setStep] = useState(0);
   const [newMarkerCoords, setNewMarkerCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [newMarkerLabel, setNewMarkerLabel] = useState('');
 
-  // Add state for question answers
-  const [questionAnswers, setQuestionAnswers] = useState<string[]>([]);
+  // Removed legacy question answers state
 
   // Add state for pin question answers
   const [pinQuestionAnswers, setPinQuestionAnswers] = useState<string[]>([]);
 
+  // Lexi simplified form state (maps to server columns)
+  const [generalArea, setGeneralArea] = useState<string>('');
+  const [specificLocation, setSpecificLocation] = useState<string>('');
+  const [languageSpoken, setLanguageSpoken] = useState<string>('');
+  const [numSpeakers, setNumSpeakers] = useState<string>('1');
+  const [wasPart, setWasPart] = useState<boolean | null>(null);
+  const [goUpToSpeakers, setGoUpToSpeakers] = useState<'Yes' | 'No' | "I don't know" | null>(null);
+  const [comfortableToAskMore, setComfortableToAskMore] = useState<'Yes' | 'No' | null>(null);
+  const [followupDetails, setFollowupDetails] = useState<string>('');
+  // Removed optional comfort-to-ask-more question per requirements
+  const [determinationMethods, setDeterminationMethods] = useState<string[]>([]);
+  const [determinationOtherText, setDeterminationOtherText] = useState<string>('');
+  // Required field errors
+  const [generalAreaErr, setGeneralAreaErr] = useState(false);
+  const [specificErr, setSpecificErr] = useState(false);
+  const [languageErr, setLanguageErr] = useState(false);
+  const [numErr, setNumErr] = useState(false);
+  const [wasPartErr, setWasPartErr] = useState(false);
+  const [determinationErr, setDeterminationErr] = useState(false);
+  const [areaSelectVisible, setAreaSelectVisible] = useState(false);
+  const [areaSearch, setAreaSearch] = useState('');
+  // Optional follow-up modal
+  const [optionalVisible, setOptionalVisible] = useState(false);
+  const [optAudioUri, setOptAudioUri] = useState<string | null>(null);
+  const [optOrigin, setOptOrigin] = useState('');
+  const [optCultural, setOptCultural] = useState('');
+  const [optDialect, setOptDialect] = useState('');
+  const [optContext, setOptContext] = useState('');
+  const [optProficiency, setOptProficiency] = useState('');
+  const [optGender, setOptGender] = useState<'Female' | 'Male' | 'Transgender' | 'Non-binary / Gender nonconforming' | 'Prefer not to say' | 'Other' | null>(null);
+  const [optGenderOther, setOptGenderOther] = useState('');
+  const [optAcademic, setOptAcademic] = useState<'Freshman' | 'Sophomore' | 'Junior' | 'Senior' | 'Davis Scholar' | 'Faculty/Staff' | 'Pre-college' | 'Non Wellesley-affiliated adult' | null>(null);
+  const [optComments, setOptComments] = useState('');
+  const [optOutstanding, setOptOutstanding] = useState('');
+
+  useEffect(() => {
+    if (areaSelectVisible) setAreaSearch('');
+  }, [areaSelectVisible]);
+
   // Add state for active task and bottom sheet/modal
-  const [activeTask, setActiveTask] = useState<any>(null);
-  const [showTaskSheet, setShowTaskSheet] = useState(false);
-  const [taskPin, setTaskPin] = useState<{ latitude: number; longitude: number } | null>(null);
+  // const [activeTask, setActiveTask] = useState<any>(null);
+  // const [showTaskSheet, setShowTaskSheet] = useState(false);
+  // const [taskPin, setTaskPin] = useState<{ latitude: number; longitude: number } | null>(null);
 
   // Add state for form modal and answers
   const [showFormModal, setShowFormModal] = useState(false);
@@ -119,6 +194,10 @@ export default function WorkspaceScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredAreas, setFilteredAreas] = useState<string[]>([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
+  const [accountVisible, setAccountVisible] = useState(false);
+  const [infoVisible, setInfoVisible] = useState(false);
+  const [infoType, setInfoType] = useState<'intro' | 'submissions' | 'consent' | null>(null);
+  const [isPlacingPin, setIsPlacingPin] = useState(false);
 
   useEffect(() => {
     if (id && user) {
@@ -131,80 +210,39 @@ export default function WorkspaceScreen() {
       zoomToArea(areaParam);
     }
     // Only open the sheet if the task is not already active
-    if (mapReady && taskParam && (!activeTask || activeTask.task_id !== taskParam.task_id)) {
-      openTaskSheet(taskParam);
-    }
+    // Task allocation disabled in simplified mode
   }, [areaParam, mapReady, taskParam]);
 
   const loadInitialData = async () => {
     if (!id || !user) return;
     setLoading(true);
     try {
-      // Fetch workspace info and user data in parallel
-      const [workspaceInfo, userData, responsesData] = await Promise.all([
-        makeRequest(`/workspaces/${id}`),
-        api.getUserByEmail(user.email),
-        api.getResponsesForWorkspace(id)
-      ]);
+      // In Lexi-only mode, use a static set of questions for the form UI if needed
+      const staticWorkspaceInfo = initialWorkspaceStructure(String(id), user);
 
-      // Check if user has joined this workspace
-      if (userData && Array.isArray(userData.workspaces) && userData.workspaces.includes(id)) {
-        setHasJoined(true);
-      } else {
-        setHasJoined(false);
-      }
+      // Fetch responses from simplified endpoint
+      const responsesData = await api.listLexiResponses();
 
-      setWorkspaceInfo(workspaceInfo);
+      setWorkspaceInfo(staticWorkspaceInfo);
 
-      // Transform database responses to frontend marker format
-      const transformedMarkers = (responsesData.responses || []).map((response: any) => {
-        // Extract answers from the response columns
-        const answers: string[] = [];
-        if (workspaceInfo?.questions) {
-          workspaceInfo.questions.forEach((question: any) => {
-            // Use the same sanitization logic as the backend
-            const columnName = question.text.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+|_+$/g, '');
+      // Transform database responses to marker format
+      const transformedMarkers = (responsesData.responses || []).map((response: any) => ({
+        id: response.id,
+        timestamp: response.created_at,
+        coordinates: {
+          latitude: response.latitude ? parseFloat(response.latitude) : null,
+          longitude: response.longitude ? parseFloat(response.longitude) : null,
+        },
+        // Map simplified answer fields if you show them in UI (optional)
+        answers: [
+          response.language_spoken || '',
+        ],
+        user_id: response.user_id,
+      }));
 
-            // Try different variations of the column name
-            let answer = response[columnName];
-            if (answer === undefined) {
-              answer = response[`\`${columnName}\``];
-            }
-            if (answer === undefined) {
-              // Try without backticks
-              answer = response[columnName.replace(/`/g, '')];
-            }
-            if (answer === undefined) {
-              // Try with backticks
-              answer = response[`\`${columnName.replace(/`/g, '')}\``];
-            }
-            if (answer === undefined) {
-              answer = '';
-            }
-
-            answers.push(answer);
-          });
-        }
-
-        return {
-          id: response.id,
-          timestamp: response.timestamp,
-          coordinates: {
-            latitude: parseFloat(response.latitude),
-            longitude: parseFloat(response.longitude)
-          },
-          answers: answers,
-          user_id: response.user_id
-        };
-      });
-
-      // Filter out any markers without valid coordinates
-      const validMarkers = transformedMarkers.filter((marker: any) =>
-        marker.coordinates &&
-        typeof marker.coordinates.latitude === 'number' &&
-        typeof marker.coordinates.longitude === 'number' &&
-        !isNaN(marker.coordinates.latitude) &&
-        !isNaN(marker.coordinates.longitude)
+      const validMarkers = transformedMarkers.filter((m: any) =>
+        m.coordinates && typeof m.coordinates.latitude === 'number' && typeof m.coordinates.longitude === 'number' &&
+        !isNaN(m.coordinates.latitude) && !isNaN(m.coordinates.longitude)
       );
 
       setMarkers(validMarkers);
@@ -212,7 +250,6 @@ export default function WorkspaceScreen() {
     } catch (error) {
       console.error('Error loading workspace data:', error);
     } finally {
-      // Reduce loading time for better UX
       setTimeout(() => setLoading(false), 200);
     }
   };
@@ -221,75 +258,31 @@ export default function WorkspaceScreen() {
     if (!id || !user) return;
     setRefreshing(true);
     try {
-      // Fetch the dynamic responses for this workspace from database
-      const responsesData = await api.getResponsesForWorkspace(id);
-
-      // Transform database responses to frontend marker format
-      const transformedMarkers = (responsesData.responses || []).map((response: any) => {
-        // Extract answers from the response columns
-        const answers: string[] = [];
-        if (workspaceInfo?.questions) {
-          workspaceInfo.questions.forEach((question: any) => {
-            // Use the same sanitization logic as the backend
-            const columnName = question.text.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+|_+$/g, '');
-
-            // Try different variations of the column name
-            let answer = response[columnName];
-            if (answer === undefined) {
-              answer = response[`\`${columnName}\``];
-            }
-            if (answer === undefined) {
-              // Try without backticks
-              answer = response[columnName.replace(/`/g, '')];
-            }
-            if (answer === undefined) {
-              // Try with backticks
-              answer = response[`\`${columnName.replace(/`/g, '')}\``];
-            }
-            if (answer === undefined) {
-              answer = '';
-            }
-
-            answers.push(answer);
-          });
-        }
-
-        return {
-          id: response.id,
-          timestamp: response.timestamp,
-          coordinates: {
-            latitude: parseFloat(response.latitude),
-            longitude: parseFloat(response.longitude)
-          },
-          answers: answers,
-          user_id: response.user_id
-        };
-      });
-
-      // Filter out any markers without valid coordinates
-      const validMarkers = transformedMarkers.filter((marker: any) =>
-        marker.coordinates &&
-        typeof marker.coordinates.latitude === 'number' &&
-        typeof marker.coordinates.longitude === 'number' &&
-        !isNaN(marker.coordinates.latitude) &&
-        !isNaN(marker.coordinates.longitude)
+      const responsesData = await api.listLexiResponses();
+      const transformedMarkers = (responsesData.responses || []).map((response: any) => ({
+        id: response.id,
+        timestamp: response.created_at,
+        coordinates: {
+          latitude: response.latitude ? parseFloat(response.latitude) : null,
+          longitude: response.longitude ? parseFloat(response.longitude) : null,
+        },
+        answers: [response.language_spoken || ''],
+        user_id: response.user_id,
+      }));
+      const validMarkers = transformedMarkers.filter((m: any) =>
+        m.coordinates && typeof m.coordinates.latitude === 'number' && typeof m.coordinates.longitude === 'number' &&
+        !isNaN(m.coordinates.latitude) && !isNaN(m.coordinates.longitude)
       );
-
       setMarkers(validMarkers);
-
     } catch (error) {
       console.error('Error refreshing map data:', error);
-      Alert.alert('Error', 'Could not refresh workspace data.');
+      Alert.alert('Error', 'Could not refresh map data.');
     } finally {
       setRefreshing(false);
     }
   };
 
-  useEffect(() => {
-    if (workspaceInfo && workspaceInfo.questions) {
-      setQuestionAnswers(Array(workspaceInfo.questions.length).fill(''));
-    }
-  }, [workspaceInfo]);
+  // Removed legacy effect for question answers
 
   const resetMapForm = () => {
     setNewMarkerLabel('');
@@ -330,8 +323,19 @@ export default function WorkspaceScreen() {
 
   // Initialize pinQuestionAnswers when modal opens
   useEffect(() => {
-    if (modalVisible && workspaceInfo?.questions.length > 0) {
-      setPinQuestionAnswers(Array(workspaceInfo.questions.length).fill(''));
+    if (modalVisible) {
+      setPinQuestionAnswers([]);
+      setGeneralArea('');
+      setSpecificLocation('');
+      setLanguageSpoken('');
+      setNumSpeakers('1');
+      setWasPart(null);
+      setGoUpToSpeakers(null);
+      setComfortableToAskMore(null);
+      setFollowupDetails('');
+
+      setDeterminationMethods([]);
+      setDeterminationOtherText('');
     }
   }, [modalVisible, workspaceInfo?.questions.length]);
 
@@ -355,55 +359,11 @@ export default function WorkspaceScreen() {
     }
   };
 
-  const handleQuestionAnswerChange = (index: number, value: string) => {
-    const newAnswers = [...questionAnswers];
-    newAnswers[index] = value;
-    setQuestionAnswers(newAnswers);
-  };
+  // Removed legacy handler for question answers
 
-  const handleJoinSubmit = async () => {
-    if (!user) {
-      Alert.alert("Authentication error", "You must be logged in to join.");
-      return;
-    }
-    // Validate all questions are answered
-    if (workspaceInfo?.questions && questionAnswers.some(ans => !ans.trim())) {
-      Alert.alert("Incomplete", "Please answer all questions to join.");
-      return;
-    }
-    // You can include questionAnswers in the user join logic or save as needed
-    const success = await api.saveUser({ email: user.email, name: user.name || 'New User', role: 'user' });
-    if (success) {
-      // Call backend to join workspace
-      try {
-        await makeRequest(`/users/${user.id}/join_workspace`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workspace_id: id }),
-        });
-        // Refetch user object to get updated workspaces
-        if (setUser) {
-          const updatedUser = await api.getUserByEmail(user.email);
-          if (updatedUser) setUser(updatedUser);
-          // Update hasJoined based on the new user object
-          if (updatedUser && Array.isArray(updatedUser.workspaces) && updatedUser.workspaces.includes(id)) {
-            setHasJoined(true);
-          } else {
-            setHasJoined(false);
-          }
-        }
-        setOnboardingVisible(false);
-        Alert.alert("Welcome!", "You have successfully joined the workspace.");
-      } catch (e) {
-        Alert.alert("Join Failed", "Could not join the workspace. Please try again.");
-      }
-    } else {
-      Alert.alert("Registration Failed", "Could not save your user information. Please try again.");
-    }
-  };
+  // Legacy join handler removed in Lexi-only mode
 
   const handleBackToHome = () => {
-    // Stay within current workspace instead of routing to a general home
     router.replace(`/workspace/${id}`);
   };
 
@@ -412,15 +372,13 @@ export default function WorkspaceScreen() {
       didSelectPinRef.current = false;
       return;
     }
-    // Only allow pin creation if the user has joined
-    if (!hasJoined) {
-        Alert.alert("Join Workspace", "Please join the workspace to add a pin. Tap the icon in the corner.");
-        return;
-    }
-
+    // Task allocation disabled
+    // Only open form when user has armed pin placement via Lexi button
+    if (!isPlacingPin) return;
     const { coordinate } = event.nativeEvent;
     setNewMarkerCoords(coordinate);
     setModalVisible(true);
+    setIsPlacingPin(false);
   };
 
   const handleMapPickImage = async () => {
@@ -531,40 +489,80 @@ export default function WorkspaceScreen() {
   };
 
   const handleMapFormSubmit = async () => {
+    if (saving) return;
     if (!newMarkerCoords) {
       Alert.alert('Missing Information', 'Please select a location on the map.');
       return;
     }
-    if (questions.length > 0 && pinQuestionAnswers.some(ans => !ans.trim())) {
-      Alert.alert('Incomplete', 'Please answer all questions for this pin.');
+
+    // Validate required fields
+    const parsedNum = parseInt(numSpeakers, 10);
+    // Validate requireds
+    const gErr = !generalArea;
+    const sErr = !specificLocation.trim();
+    const lErr = !languageSpoken.trim();
+    const nErr = isNaN(parsedNum);
+    const wErr = wasPart === null;
+    const dErr = determinationMethods.length === 0;
+    setGeneralAreaErr(gErr);
+    setSpecificErr(sErr);
+    setLanguageErr(lErr);
+    setNumErr(nErr);
+    setWasPartErr(wErr);
+    setDeterminationErr(dErr);
+    if (gErr || sErr || lErr || nErr || wErr || dErr) {
+      Alert.alert('Required fields missing', 'Please answer all required questions (marked with *).');
+      try { scrollRef.current?.scrollTo({ y: 0, animated: true }); } catch {}
       return;
     }
-    const newPin = {
-      timestamp: new Date().toISOString(),
-      coordinates: newMarkerCoords,
-      answers: pinQuestionAnswers,
-      user_id: user?.id,
+
+    const payload: any = {
+      user_id: String(user?.id || ''),
+      general_area: generalArea,
+      specific_location: specificLocation,
+      language_spoken: languageSpoken,
+      num_speakers: parsedNum,
+      was_part_of_conversation: Boolean(wasPart),
+      followup_details: followupDetails || undefined,
+      comfortable_to_ask_more: comfortableToAskMore || undefined,
+      go_up_to_speakers: wasPart === false ? (goUpToSpeakers || undefined) : undefined,
+      // Extended optional fields appended in save function based on user choice
+      determination_methods: determinationMethods,
+      determination_other_text: determinationOtherText || undefined,
+      latitude: newMarkerCoords.latitude,
+      longitude: newMarkerCoords.longitude,
     };
 
-    const updatedResponses = [...markers, newPin];
-    await api.saveResponsesForWorkspace(id, { responses: updatedResponses });
+    if (comfortableToAskMore === 'Yes') {
+      payload.speaker_origin = optOrigin || undefined;
+      payload.speaker_cultural_background = optCultural || undefined;
+      payload.speaker_dialect = optDialect || undefined;
+      payload.speaker_context = optContext || undefined;
+      payload.speaker_proficiency = optProficiency || undefined;
+      payload.speaker_gender_identity = optGender || undefined;
+      payload.speaker_gender_other_text = optGender === 'Other' ? (optGenderOther || undefined) : undefined;
+      payload.speaker_academic_level = optAcademic || undefined;
+      payload.additional_comments = optComments || undefined;
+      payload.outstanding_questions = optOutstanding || undefined;
+    }
 
-    setMarkers(updatedResponses);
-    setModalVisible(false);
-    resetMapForm();
-    setSelectedPin(null);
+    try {
+      setSaving(true);
+      const res = await api.createLexiResponse(payload as any);
+      if (!res?.success) throw new Error('Server rejected');
+      await refreshMapData();
+      setModalVisible(false);
+      resetMapForm();
+      setSelectedPin(null);
+      Alert.alert('Saved', 'Your submission has been saved.');
+    } catch (e) {
+      Alert.alert('Save Failed', 'Could not save to the database.');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  // Only use questions from the workspace record (workspaces table)
-  const questions = Array.isArray(workspaceInfo?.questions)
-    ? workspaceInfo.questions
-    : (typeof workspaceInfo?.questions === 'string'
-        ? JSON.parse(workspaceInfo.questions)
-        : []);
-
-  if (modalVisible) {
-    console.log('Question text:', questions[step]?.text);
-  }
+  // Remove legacy dynamic questions in simplified mode
 
   // When opening the modal, always reset step to 0
   const openPinModal = () => {
@@ -586,14 +584,14 @@ export default function WorkspaceScreen() {
   };
 
   // Function to open the task sheet with a task
-  const openTaskSheet = (task: any) => {
-    setActiveTask(task);
-    setShowTaskSheet(true);
-    setTaskPin(null);
-    if (task && task.Which_general_area_on_campus_are_you_reporting_from) {
-      zoomToArea(task.Which_general_area_on_campus_are_you_reporting_from);
-    }
-  };
+  // const openTaskSheet = (task: any) => {
+  //   setActiveTask(task);
+  //   setShowTaskSheet(true);
+  //   setTaskPin(null);
+  //   if (task && task.Which_general_area_on_campus_are_you_reporting_from) {
+  //     zoomToArea(task.Which_general_area_on_campus_are_you_reporting_from);
+  //   }
+  // };
 
   // Search functionality
   const handleSearchChange = (text: string) => {
@@ -654,52 +652,47 @@ export default function WorkspaceScreen() {
   };
 
   // On map tap for a task
-  const handleTaskMapPress = (event: MapPressEvent) => {
-    if (showTaskSheet) {
-      setTaskPin(event.nativeEvent.coordinate);
-      setShowFormModal(true); // Open the form immediately after pin
-    } else {
-      handleMapPress(event);
-    }
-  };
+  // const handleTaskMapPress = (event: MapPressEvent) => {
+  //   if (showTaskSheet) {
+  //     setTaskPin(event.nativeEvent.coordinate);
+  //     setShowFormModal(true); // Open the form immediately after pin
+  //   } else {
+  //     handleMapPress(event);
+  //   }
+  // };
 
   // On form submit
-  const handleSubmitTaskForm = async (answersFromForm?: string[]) => {
-    if (!activeTask || !taskPin || !workspaceInfo?.questions) return;
-    // Only send answers for questions that are not the general area
-    const filteredQuestions = workspaceInfo.questions.filter(
-      (qq: any) => qq.text !== 'Which general area on campus are you reporting from?'
-    );
-    const payload = {
-      answers: answersFromForm || formAnswers,
-      latitude: taskPin.latitude,
-      longitude: taskPin.longitude,
-    };
-    await makeRequest(`/tasks/${id}/${activeTask.id || activeTask.task_id}/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    setShowFormModal(false);
-    setShowTaskSheet(false);
-    setActiveTask(null);
-    setTaskPin(null);
-    setFormAnswers([]);
-  };
+  // const handleSubmitTaskForm = async (answersFromForm?: string[]) => {
+  //   if (!activeTask || !taskPin || !workspaceInfo?.questions) return;
+  //   const payload = {
+  //     answers: answersFromForm || formAnswers,
+  //     latitude: taskPin.latitude,
+  //     longitude: taskPin.longitude,
+  //   };
+  //   await makeRequest(`/tasks/${id}/${activeTask.id || activeTask.task_id}/complete`, {
+  //     method: 'POST',
+  //     headers: { 'Content-Type': 'application/json' },
+  //     body: JSON.stringify(payload),
+  //   });
+  //   setShowFormModal(false);
+  //   setShowTaskSheet(false);
+  //   setActiveTask(null);
+  //   setTaskPin(null);
+  //   setFormAnswers([]);
+  // };
 
   // Submit handler for completing the task
-  const handleSubmitTaskPin = async () => {
-    if (!activeTask || !taskPin) return;
-    try {
-      await makeRequest(`/tasks/${id}/${activeTask.id || activeTask.task_id}/complete`, { method: 'POST' });
-      setShowTaskSheet(false);
-      setActiveTask(null);
-      setTaskPin(null);
-      // Optionally refresh tasks or map data here
-    } catch (e) {
-      Alert.alert('Error', 'Failed to submit your location.');
-    }
-  };
+  // const handleSubmitTaskPin = async () => {
+  //   if (!activeTask || !taskPin) return;
+  //   try {
+  //     await makeRequest(`/tasks/${id}/${activeTask.id || activeTask.task_id}/complete`, { method: 'POST' });
+  //     setShowTaskSheet(false);
+  //     setActiveTask(null);
+  //     setTaskPin(null);
+  //   } catch (e) {
+  //     Alert.alert('Error', 'Failed to submit your location.');
+  //   }
+  // };
 
   if (!fontsLoaded || loading) {
     return (
@@ -728,34 +721,26 @@ export default function WorkspaceScreen() {
 
   return (
     <View style={styles.mapContainer}>
-      {/* Enhanced Header */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.replace(`/workspace/${id}`)}>
-          <Ionicons name="arrow-back" size={20} color="#4A90E2" />
-          <Text style={styles.backButtonText}>Back</Text>
+      {/* Search + Account overlay */}
+      <View style={styles.searchContainer} pointerEvents="box-none">
+        <View style={styles.searchRow}>
+          <TouchableOpacity
+            style={styles.accountButton}
+            onPress={() => setAccountVisible(true)}
+          >
+            <Ionicons name="person-circle-outline" size={28} color="#4A90E2" />
         </TouchableOpacity>
-        <View style={styles.headerInfo}>
-          <Text style={styles.workspaceTitle}>{workspaceInfo.name}</Text>
-          <Text style={styles.entryCount}>{markers.length} entries</Text>
-        </View>
-        <TouchableOpacity style={styles.refreshButton} onPress={refreshMapData} disabled={refreshing}>
-          <Ionicons name="refresh" size={16} color={refreshing ? "#9CA3AF" : "#4A90E2"} />
-          <Text style={[styles.refreshButtonText, refreshing && styles.refreshButtonDisabled]}>
-            {refreshing ? 'Refreshing...' : 'Refresh'}
-          </Text>
+        <TouchableOpacity
+          style={styles.refreshTopButton}
+          onPress={refreshMapData}
+          disabled={refreshing}
+        >
+          {refreshing ? (
+            <ActivityIndicator size={18} color="#4A90E2" />
+          ) : (
+            <Ionicons name="refresh" size={22} color="#4A90E2" />
+          )}
         </TouchableOpacity>
-      </View>
-
-      {/* Go Back to Home Screen Button */}
-      <View style={styles.homeButtonContainer}>
-        <TouchableOpacity style={styles.homeButton} onPress={() => router.replace(`/workspace/${id}`)}>
-          <Ionicons name="home" size={20} color="#FFFFFF" />
-          {/* <Text style={styles.homeButtonText}>Home</Text> */}
-        </TouchableOpacity>
-      </View>
-
-      {/* Search Bar */}
-      <View style={styles.searchContainer}>
         <View style={styles.searchBarWrapper}>
           <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
           <TextInput
@@ -780,9 +765,9 @@ export default function WorkspaceScreen() {
               <Ionicons name="close-circle" size={20} color="#666" />
             </TouchableOpacity>
           )}
+          </View>
         </View>
 
-        {/* Search Results Dropdown */}
         {showSearchResults && filteredAreas.length > 0 && (
           <View style={styles.searchResults}>
             <ScrollView style={styles.searchResultsList} nestedScrollEnabled>
@@ -807,7 +792,7 @@ export default function WorkspaceScreen() {
         provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
         initialRegion={region}
         onRegionChangeComplete={setRegion}
-        onPress={handleTaskMapPress}
+        onPress={handleMapPress}
         showsUserLocation
         showsMyLocationButton
         onMapReady={() => setMapReady(true)}
@@ -832,7 +817,7 @@ export default function WorkspaceScreen() {
                   <Animated.View
                     key={i}
                     style={[
-                      styles.bubble,
+                      styles.mapPulseBubble,
                       {
                         transform: [{ scale: anim }],
                         opacity: anim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] }),
@@ -864,31 +849,134 @@ export default function WorkspaceScreen() {
             </View>
           </Marker>
         )}
-        {/* Task pin marker */}
-        {taskPin && (
-          <Marker coordinate={taskPin}>
-            <View style={styles.taskPin}>
-              <Image
-                source={require('../../assets/images/lexi_icon.png')}
-                style={styles.taskPinImage}
-                resizeMode="contain"
-              />
-            </View>
-          </Marker>
-        )}
+        {/* Task pin marker disabled in simplified mode */}
       </MapView>
 
-      {/* Enhanced Floating Action Button */}
+      {/* Account & Campaign Modal */}
+      <Modal
+        visible={accountVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAccountVisible(false)}
+      >
+        <View style={styles.accountModalOverlay}>
+          <TouchableWithoutFeedback onPress={() => setAccountVisible(false)}>
+            <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }} />
+          </TouchableWithoutFeedback>
+          <View style={styles.accountSheet}>
+            <Text style={styles.accountTitle}>Account & Campaign</Text>
+            <View style={styles.bubbleColumn}>
+              <TouchableOpacity style={styles.bubble} onPress={() => { setInfoType('intro'); setInfoVisible(true); }}>
+                <Ionicons name="information-circle-outline" size={20} color="#1F2937" />
+                <Text style={styles.bubbleText}>Introduction</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.bubble} onPress={() => { setInfoType('submissions'); setInfoVisible(true); }}>
+                <Ionicons name="document-text-outline" size={20} color="#1F2937" />
+                <Text style={styles.bubbleText}>Your submissions</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.bubble} onPress={() => { setAccountVisible(false); router.push('/consent'); }}>
+                <Ionicons name="shield-checkmark-outline" size={20} color="#1F2937" />
+                <Text style={styles.bubbleText}>Consent</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.bubble} onPress={() => { setAccountVisible(false); signOut(); }}>
+                <Ionicons name="log-out-outline" size={20} color="#EF4444" />
+                <Text style={[styles.bubbleText, { color: '#EF4444' }]}>Log out</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Full-screen info modals */}
+            <Modal visible={infoVisible} transparent animationType="slide" onRequestClose={() => setInfoVisible(false)}>
+              <View style={styles.infoOverlay}>
+                <SafeAreaView style={styles.infoContainer}>
+                  <View style={styles.infoHeader}>
+                    <Text style={styles.infoTitle}>
+                      {infoType === 'intro' ? 'Introduction' : infoType === 'submissions' ? 'Your submissions' : 'Info'}
+                    </Text>
+                    <TouchableOpacity onPress={() => setInfoVisible(false)} style={styles.infoCloseBtn}>
+                      <Ionicons name="close" size={22} color="#6B7280" />
+                    </TouchableOpacity>
+                  </View>
+                  <ScrollView contentContainerStyle={styles.infoContent} showsVerticalScrollIndicator={false}>
+                    {infoType === 'submissions' && (
+                      <View>
+                        {(markers || []).filter((m: any) => m?.user_id === user?.id).length === 0 ? (
+                          <Text style={styles.expandText}>No submissions yet.</Text>
+                        ) : (
+                          (markers || [])
+                            .filter((m: any) => m?.user_id === user?.id)
+                            .slice() // copy
+                            .reverse() // latest first
+                            .map((m: any, idx: number) => (
+                              <View key={idx} style={styles.submissionItem}>
+                                <Text style={styles.submissionTitle}>{new Date(m.timestamp).toLocaleString()}</Text>
+                                {(workspaceInfo?.questions || []).map((q: any, qi: number) => (
+                                  <Text key={`${idx}-${qi}`} style={styles.submissionText}>
+                                    {q.text}: {m.answers?.[qi] || ''}
+                                  </Text>
+                                ))}
+                              </View>
+                            ))
+                        )}
+                      </View>
+                    )}
+                    {infoType === 'intro' && (
+                      <View style={{ width: '100%' }}>
+                        <View style={styles.introHeader}>
+                          <Image source={require('../../assets/images/lexi_icon.png')} style={styles.introLogo} />
+                          <View>
+                            <Text style={styles.introTitle}>Hi there — I’m Lexi!</Text>
+                            <Text style={styles.introSubtitle}>Thanks for helping map languages at Wellesley 💙</Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.introCard}>
+                          <Text style={styles.introParagraph}>
+                            Thank you so much for your interest in helping me understand language usage on Wellesley’s campus — I’m excited to learn from you.
+                          </Text>
+                          <Text style={styles.introParagraph}>
+                            It’s important that responses are in good faith and strive to correctly represent the language groups that belong on campus. Let’s avoid misidentifying our community’s unique and valuable identities.
+                          </Text>
+
+                          <View style={styles.divider} />
+                          <Text style={styles.introRulesTitle}>Lexi’s List of Rules</Text>
+
+                          <View style={styles.bulletRow}>
+                            <View style={styles.bulletDot} />
+                            <Text style={styles.bulletText}>Be kind. If you wouldn’t say it out loud, don’t hit send.</Text>
+                          </View>
+                          <View style={styles.bulletRow}>
+                            <View style={styles.bulletDot} />
+                            <Text style={styles.bulletText}>Be honest. There’s no “right” answer — truthful beats made‑up data.</Text>
+                          </View>
+                          <View style={styles.bulletRow}>
+                            <View style={styles.bulletDot} />
+                            <Text style={styles.bulletText}>Be brave. If you’re unsure, kindly ask the speaker — it’s a great chance to connect.</Text>
+                          </View>
+                          <View style={styles.bulletRow}>
+                            <View style={styles.bulletDot} />
+                            <Text style={styles.bulletText}>Be enthusiastic. The more you engage, the more we can learn together!</Text>
+                          </View>
+                        </View>
+                      </View>
+                    )}
+                    {/* consent handled on dedicated page */}
+                  </ScrollView>
+                </SafeAreaView>
+              </View>
+            </Modal>
+
+            <TouchableOpacity style={styles.accountCloseButton} onPress={() => setAccountVisible(false)}>
+              <Text style={styles.accountCloseButtonText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Floating Action Button: arm pin placement, then tap map to set location */}
       <View style={styles.bottomRightContainer}>
         <TouchableOpacity
           style={styles.formToggleButton}
-          onPress={() => {
-            if (!hasJoined) {
-              setOnboardingVisible(true);
-            } else {
-              openPinModal();
-            }
-          }}
+          onPress={() => setIsPlacingPin((prev) => !prev)}
         >
           <Image
             source={require('../../assets/images/lexi_icon.png')}
@@ -923,213 +1011,233 @@ export default function WorkspaceScreen() {
             >
               <Text style={styles.closeButtonText}>✕</Text>
             </TouchableOpacity>
-            <View style={styles.progressContainer}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${((step + 1) / questions.length) * 100}%` },
-                ]}
-              />
-            </View>
           </View>
-          <Text style={styles.title}>
-            {questions[step]?.text || 'NO QUESTION TEXT'}
-          </Text>
-          <View style={styles.content}>
-            {questions[step]?.type === 'dropdown' && questions[step]?.text === 'Which general area on campus are you reporting from?' ? (
-              <Picker
-                selectedValue={pinQuestionAnswers[step] || ''}
-                onValueChange={(val: string) => {
-                  const newAnswers = [...pinQuestionAnswers];
-                  newAnswers[step] = val;
-                  setPinQuestionAnswers(newAnswers);
-                }}
-                style={{height: 50, width: '100%'}}>
-                <Picker.Item label="Select an area..." value="" />
-                {questions[step]?.options && questions[step].options.map((opt: string, i: number) => (
-                  <Picker.Item key={i} label={opt} value={opt} />
-                ))}
-              </Picker>
-            ) : (
-              questions[step]?.type === 'text' ? (
-                                  <TypoDetectingTextInput
-                    value={pinQuestionAnswers[step] || ''}
-                    onChangeText={(val: string) => {
-                      const newAnswers = [...pinQuestionAnswers];
-                      newAnswers[step] = val;
-                      setPinQuestionAnswers(newAnswers);
-                    }}
-                    placeholder="Type your answer..."
-                    style={styles.text}
-                    multiline
-                  />
-              ) : questions[step]?.type === 'image' ? (
-                <View style={styles.uploadContainer}>
-                  <TouchableOpacity
-                    onPress={handleImagePick}
-                    style={{ width: '100%', height: 200, justifyContent: 'center', alignItems: 'center' }}
-                  >
-                    {pinQuestionAnswers[step] ? (
-                      <Image
-                        source={{ uri: pinQuestionAnswers[step] }}
-                        style={styles.imagePreview}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={styles.placeholderContent}>
-                        <Image
-                          source={require('../../assets/images/upload.png')}
-                          style={{ width: 50, height: 50 }}
-                          resizeMode="contain"
-                        />
-                        <Text style={styles.uploadText}>Tap to select image</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                  {pinQuestionAnswers[step] && (
-                    <TouchableOpacity
-                      onPress={() => {
-                        const newAnswers = [...pinQuestionAnswers];
-                        newAnswers[step] = '';
-                        setPinQuestionAnswers(newAnswers);
-                      }}
-                      style={styles.imageCancelButton}
-                    >
-                      <Text style={styles.imageCancelButtonText}>Remove Image</Text>
-                    </TouchableOpacity>
-                  )}
-                  <TouchableOpacity
-                    onPress={() => {
-                      Alert.alert(
-                        'Image Upload Options',
-                        'Choose how to add an image:',
-                        [
-                          { text: 'Photo Library', onPress: handleImagePick },
-                          {
-                            text: 'Enter URL/Description',
-                            onPress: () => {
-                              const newAnswers = [...pinQuestionAnswers];
-                              newAnswers[step] = 'image_url_or_description';
-                              setPinQuestionAnswers(newAnswers);
-                            }
-                          },
-                          { text: 'Cancel', style: 'cancel' }
-                        ]
-                      );
-                    }}
-                    style={[styles.imageCancelButton, { marginTop: 10 }]}
-                  >
-                    <Text style={styles.imageCancelButtonText}>Alternative Options</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : questions[step]?.type === 'audio' ? (
-                <View style={styles.voiceContainer}>
-                  <TouchableOpacity
-                    onPress={isMapRecording ? handleMapStopRecording : async () => {
-                      try {
-                        await Audio.requestPermissionsAsync();
-                        await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-                        const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-                        setMapRecording(recording);
-                        setIsMapRecording(true);
-                      } catch (err) {
-                        console.error('Failed to start recording', err);
-                      }
-                    }}
-                    style={styles.recordButton}
-                  >
-                    <Text style={styles.recordIcon}>{isMapRecording ? '●' : '▶'}</Text>
-                  </TouchableOpacity>
-                  {pinQuestionAnswers[step] && !isMapRecording && (
-                    <TouchableOpacity
-                      onPress={async () => {
-                        try {
-                          const { sound } = await Audio.Sound.createAsync({ uri: pinQuestionAnswers[step] });
-                          await sound.playAsync();
-                        } catch (error) {
-                          console.error('Playback failed', error);
-                        }
-                      }}
-                      style={styles.playButton}
-                    >
-                      <Text style={styles.playButtonText}>PLAY RECORDING</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              ) : null
-            )}
-            {questions[step]?.type === 'image' && pinQuestionAnswers[step] === 'image_url_or_description' && (
-              <View style={styles.textInputContainer}>
-                <Text style={styles.inputLabel}>Enter image URL or description:</Text>
+          <Text style={styles.title}>Add a Lexi observation</Text>
+          <Text style={styles.requiredNote}><Text style={styles.required}>*</Text> Required</Text>
+          <ScrollView ref={scrollRef} style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 20 }}>
+            <Text style={styles.inputLabel}>In what general area on campus did you hear the language? <Text style={styles.required}>*</Text></Text>
+            <TouchableOpacity
+              onPress={() => setAreaSelectVisible(true)}
+              activeOpacity={0.8}
+              style={[styles.selectField, (generalAreaErr ? { borderColor: '#EF4444' } : (!generalArea ? { borderColor: '#F59E0B' } : null))]}
+            >
+              <Text style={generalArea ? styles.selectFieldText : [styles.selectFieldText, { color: '#9CA3AF' }]}>
+                {generalArea || 'Select general area'}
+              </Text>
+            </TouchableOpacity>
+            {areaSelectVisible && (
+              <View style={styles.dropdownPanel}>
                 <TextInput
-                  style={styles.textInput}
-                  placeholder="Enter image URL or describe the image..."
-                  value={pinQuestionAnswers[step] === 'image_url_or_description' ? '' : pinQuestionAnswers[step]}
-                  onChangeText={(text) => {
-                    const newAnswers = [...pinQuestionAnswers];
-                    newAnswers[step] = text;
-                    setPinQuestionAnswers(newAnswers);
-                  }}
-                  multiline
-                  numberOfLines={3}
+                  placeholder="Search areas..."
+                  value={areaSearch}
+                  onChangeText={setAreaSearch}
+                  style={[styles.text, { backgroundColor: '#F9FAFB', borderWidth: 0, marginBottom: 8 }]}
                 />
-              </View>
-            )}
-            {/* Navigation Buttons */}
-                          {questions.length === 1 ? (
-                <View style={[
-                  styles.bottomNavFullWidth,
-                  questions[step]?.text === 'Which general area on campus are you reporting from?'
-                    ? styles.bottomNavGeneralArea
-                    : null
-                ]}>
+                <ScrollView style={{ maxHeight: 300 }}>
+                  {LEXI_AREAS_LIST.filter(a => a.toLowerCase().includes(areaSearch.toLowerCase())).map(opt => {
+                    const selected = generalArea === opt;
+                    return (
+                      <TouchableOpacity
+                        key={opt}
+                        activeOpacity={0.7}
+                        style={[styles.areaRow, selected && { backgroundColor: '#F0F7FF' }]}
+                        onPress={() => { setGeneralArea(opt); setAreaSelectVisible(false); setAreaSearch(''); }}
+                      >
+                        <View style={[styles.radioOuter, selected && styles.radioOuterActive]}>
+                          {selected ? <View style={styles.radioInner} /> : null}
+                        </View>
+                        <Text style={styles.areaText}>{opt}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                <View style={[styles.bottomNavFullWidth, { paddingTop: 8 }]}>
                   <TouchableOpacity
-                    style={styles.navButtonFull}
-                    onPress={handleMapFormSubmit}
-                    disabled={pinQuestionAnswers.some(ans => !ans)}
+                    style={[styles.navButtonFull, { borderRadius: 999 }]}
+                    onPress={() => { setAreaSelectVisible(false); setAreaSearch(''); }}
                   >
-                    <Text style={[styles.navButtonText, { color: '#FFFFFF' }]}>Submit</Text>
+                    <Text style={[styles.navButtonText, { color: '#FFFFFF' }]}>Done</Text>
                   </TouchableOpacity>
                 </View>
-              ) : (
-                <View style={[
-                  styles.bottomNav,
-                  questions[step]?.text === 'Which general area on campus are you reporting from?'
-                    ? styles.bottomNavGeneralArea
-                    : null
-                ]}>
-                                  {step > 0 && (
-                    <TouchableOpacity
-                      style={styles.navButtonLeft}
-                      onPress={() => setStep(step - 1)}
-                    >
-                      <Text style={[styles.navButtonText, { color: '#4A90E2' }]}>Back</Text>
-                    </TouchableOpacity>
-                  )}
-                  {step < questions.length - 1 ? (
-                    <TouchableOpacity
-                      style={styles.navButtonRight}
-                      onPress={() => {
-                        if (step < questions.length - 1) setStep(step + 1);
-                      }}
-                      disabled={!pinQuestionAnswers[step] || (questions[step]?.type !== 'text' && !pinQuestionAnswers[step])}
-                    >
-                      <Text style={[styles.navButtonText, { color: '#FFFFFF' }]}>Next</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.navButtonFull}
-                      onPress={handleMapFormSubmit}
-                      disabled={pinQuestionAnswers.some(ans => !ans)}
-                    >
-                      <Text style={[styles.navButtonText, { color: '#FFFFFF' }]}>Submit</Text>
-                    </TouchableOpacity>
-                  )}
               </View>
             )}
-          </View>
+
+            <Text style={styles.inputLabel}>Where are you, exactly? <Text style={styles.required}>*</Text></Text>
+            <TextInput
+              style={styles.text}
+              placeholder="e.g., Lulu fireplace, Leaky Beaker, outside in the Quint"
+              value={specificLocation}
+              onChangeText={(t) => { setSpecificLocation(t); if (specificErr && t.trim()) setSpecificErr(false);} }
+            />
+            {specificErr ? <Text style={styles.errorText}>This field is required.</Text> : null}
+
+            <Text style={styles.inputLabel}>What language was spoken? <Text style={styles.required}>*</Text></Text>
+            <TextInput
+              style={styles.text}
+              placeholder="e.g., Spanish"
+              value={languageSpoken}
+              onChangeText={(t) => { setLanguageSpoken(t); if (languageErr && t.trim()) setLanguageErr(false);} }
+            />
+            {languageErr ? <Text style={styles.errorText}>This field is required.</Text> : null}
+
+            <Text style={styles.inputLabel}>How many speakers were present? <Text style={styles.required}>*</Text></Text>
+            <TextInput
+              style={styles.text}
+              placeholder="e.g., 2"
+              keyboardType="number-pad"
+              value={numSpeakers}
+              onChangeText={(t) => { const v = t.replace(/\D/g, ''); setNumSpeakers(v); if (numErr && v) setNumErr(false);} }
+            />
+            {numErr ? <Text style={styles.errorText}>Please enter a number.</Text> : null}
+
+            <Text style={styles.inputLabel}>Were you part of the conversation? <Text style={styles.required}>*</Text></Text>
+            <View style={styles.optionRow}>
+              {['Yes','No'].map(val => (
+                <TouchableOpacity
+                  key={val}
+                  style={[styles.optionPill, (wasPart === (val==='Yes')) && styles.optionPillActive]}
+                  onPress={() => { setWasPart(val === 'Yes'); if (wasPartErr) setWasPartErr(false);} }
+                >
+                  <Text style={{ color: (wasPart === (val==='Yes')) ? '#fff' : '#1F2937', fontWeight: '600' }}>{val}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {wasPartErr ? <Text style={styles.errorText}>Please select Yes or No.</Text> : null}
+
+            {wasPart === true && (
+              <>
+                <Text style={styles.inputLabel}>You indicated you were part of the conversation. Tell me more (optional)</Text>
+                <TextInput
+                  style={[styles.text, { minHeight: 80 }]}
+                  placeholder="Add details..."
+                  value={followupDetails}
+                  onChangeText={setFollowupDetails}
+                  multiline
+                />
+              </>
+            )}
+
+            {wasPart === false && (
+              <>
+                <Text style={styles.inputLabel}>Would you be comfortable going up to the person and asking them more questions?</Text>
+                <View style={styles.optionRow}>
+                  {(['Yes','No',"I don't know"] as const).map(val => (
+                    <TouchableOpacity
+                      key={val}
+                      style={[styles.optionPill, (goUpToSpeakers === val) && styles.optionPillActive]}
+                      onPress={() => setGoUpToSpeakers(val)}
+                    >
+                      <Text style={{ color: (goUpToSpeakers === val) ? '#fff' : '#1F2937', fontWeight: '600' }}>{val}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            )}
+
+            <Text style={styles.inputLabel}>How did you determine the language? (check all that apply) <Text style={styles.required}>*</Text></Text>
+            {DETERMINATION_OPTIONS.map((opt) => {
+              const checked = determinationMethods.includes(opt);
+              return (
+                <TouchableOpacity key={opt} style={styles.checkboxRow} onPress={() => {
+                  setDeterminationMethods((prev) => checked ? prev.filter(x => x !== opt) : [...prev, opt]);
+                }}>
+                  <View style={[styles.checkboxBox, checked && styles.checkboxBoxChecked]}>
+                    {checked ? <Text style={{ color: '#fff', fontWeight: '800' }}>✓</Text> : null}
+                  </View>
+                  <Text style={styles.checkboxText}>{opt}</Text>
+                </TouchableOpacity>
+              );
+            })}
+            {determinationMethods.includes('Other') && (
+              <TextInput
+                style={styles.text}
+                placeholder="Please specify"
+                value={determinationOtherText}
+                onChangeText={setDeterminationOtherText}
+              />
+            )}
+            {determinationErr ? <Text style={styles.errorText}>Select at least one option.</Text> : null}
+
+            {/* Ask at end: do you want to answer more questions now? Controls optional form */}
+            <Text style={styles.inputLabel}>Would you like to answer more questions now?</Text>
+            <View style={styles.optionRow}>
+              {([ 'Yes', 'No' ] as const).map(val => (
+                <TouchableOpacity
+                  key={val}
+                  style={[styles.optionPill, (comfortableToAskMore === val) && styles.optionPillActive]}
+                  onPress={() => setComfortableToAskMore(val)}
+                >
+                  <Text style={{ color: (comfortableToAskMore === val) ? '#fff' : '#1F2937', fontWeight: '600' }}>{val}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {comfortableToAskMore === 'Yes' && (
+              <>
+                <Text style={styles.inputLabel}>Where is the speaker from?</Text>
+                <TextInput style={styles.text} value={optOrigin} onChangeText={setOptOrigin} placeholder="Geographic location" />
+
+                <Text style={styles.inputLabel}>Cultural/ethnic background</Text>
+                <TextInput style={styles.text} value={optCultural} onChangeText={setOptCultural} placeholder="Background" />
+
+                <Text style={styles.inputLabel}>Dialect or accent</Text>
+                <TextInput style={styles.text} value={optDialect} onChangeText={setOptDialect} placeholder="Dialect/accent" />
+
+                <Text style={styles.inputLabel}>Context of language use</Text>
+                <TextInput style={styles.text} value={optContext} onChangeText={setOptContext} placeholder="e.g., talking to family, friends, practicing for exam" />
+
+                <Text style={styles.inputLabel}>Self-prescribed proficiency</Text>
+                <TextInput style={styles.text} value={optProficiency} onChangeText={setOptProficiency} placeholder="Proficiency level" />
+
+                <Text style={styles.inputLabel}>Gender identity</Text>
+                <View style={styles.optionRow}>
+                  {(['Female','Male','Transgender','Non-binary / Gender nonconforming','Prefer not to say','Other'] as const).map(val => (
+                    <TouchableOpacity key={val} style={[styles.optionPill, optGender === val && styles.optionPillActive]} onPress={() => setOptGender(val)}>
+                      <Text style={{ color: (optGender === val) ? '#fff' : '#1F2937', fontWeight: '600' }}>{val}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                {optGender === 'Other' && (
+                  <TextInput style={styles.text} value={optGenderOther} onChangeText={setOptGenderOther} placeholder="Please specify" />
+                )}
+
+                <Text style={styles.inputLabel}>Academic level</Text>
+                <View style={styles.optionRow}>
+                  {(['Freshman','Sophomore','Junior','Senior','Davis Scholar','Faculty/Staff','Pre-college','Non Wellesley-affiliated adult'] as const).map(val => (
+                    <TouchableOpacity key={val} style={[styles.optionPill, optAcademic === val && styles.optionPillActive]} onPress={() => setOptAcademic(val)}>
+                      <Text style={{ color: (optAcademic === val) ? '#fff' : '#1F2937', fontWeight: '600' }}>{val}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.inputLabel}>Additional comments/feedback</Text>
+                <TextInput style={[styles.text, { minHeight: 80 }]} value={optComments} onChangeText={setOptComments} multiline placeholder="Optional" />
+
+                <Text style={styles.inputLabel}>Outstanding questions about language at Wellesley</Text>
+                <TextInput style={[styles.text, { minHeight: 80 }]} value={optOutstanding} onChangeText={setOptOutstanding} multiline placeholder="Optional" />
+              </>
+            )}
+
+            <View style={[styles.bottomNavFullWidth, { paddingBottom: 30 }]}>
+              <TouchableOpacity
+                style={styles.navButtonFull}
+                onPress={() => {
+                  try { Keyboard.dismiss(); } catch {}
+                  handleMapFormSubmit();
+                }}
+                disabled={false}
+              >
+                <Text style={[styles.navButtonText, { color: '#FFFFFF' }]}>{saving ? 'Saving…' : 'Submit'}</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      {/* General Area Selector Overlay (avoid nested modal issues) */}
+      {/* Inline dropdown panel replaces overlay to ensure taps work in all environments */}
+
+      {/* Optional questions modal removed; rendered inline when end question is Yes */}
 
       {selectedPin && detailsVisible && (
         <AnimatedPressable
@@ -1164,134 +1272,13 @@ export default function WorkspaceScreen() {
         </AnimatedPressable>
       )}
 
-      {/* Onboarding Form Modal */}
-      <Modal
-        visible={onboardingVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setOnboardingVisible(false)}
-      >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <ScrollView>
-              <Text style={styles.modalTitle}>Join {workspaceInfo?.name}</Text>
-              <Text style={styles.modalSubtitle}>
-                To start adding pins to this workspace, please confirm your registration.
-              </Text>
-
-              {/* Developer-created Questions (from workspace record only) */}
-              {questions.length > 0 && questions.map((q: any, idx: number) => (
-                <View style={styles.welcomeQuestionContainer} key={idx}>
-                  <Text style={styles.welcomeQuestionLabel}>{q.text}</Text>
-                  {q.type === 'dropdown' && q.text === 'Which general area on campus are you reporting from?' ? (
-                    <View style={styles.welcomePickerContainer}>
-                      <Picker
-                        selectedValue={questionAnswers[idx] || ''}
-                        onValueChange={(val: string) => handleQuestionAnswerChange(idx, val)}
-                        style={styles.welcomePicker}>
-                        <Picker.Item label="Select an area..." value="" />
-                        {q.options && q.options.map((opt: string, i: number) => (
-                          <Picker.Item key={i} label={opt} value={opt} />
-                        ))}
-                      </Picker>
-                    </View>
-                  ) : (
-                    <TextInput
-                      style={styles.welcomeTextInput}
-                      value={questionAnswers[idx] || ''}
-                      onChangeText={val => handleQuestionAnswerChange(idx, val)}
-                      placeholder="Type your answer..."
-                      multiline={q.type === 'text'}
-                      placeholderTextColor="#9CA3AF"
-                    />
-                  )}
-                </View>
-              ))}
-
-              <TouchableOpacity style={styles.formButton} onPress={handleJoinSubmit}>
-                <Text style={styles.buttonText}>Confirm & Join</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.closeButton}
-                onPress={() => setOnboardingVisible(false)}
-              >
-                 <Text style={styles.closeButtonText}>Cancel</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      {/* Simplified: remove onboarding/join modal */}
 
       {/* Task bottom sheet/modal */}
-      {showTaskSheet && activeTask && (
-        <View style={styles.taskBottomSheet}>
-                    <View style={styles.taskSheetHeader}>
-            <View style={styles.taskSheetIndicator} />
-            <Text style={styles.taskSheetTitle}>New Task</Text>
-          </View>
-
-          <View style={styles.taskContentContainer}>
-            <Text style={styles.taskInstructionText}>
-              Click where you are at in {activeTask.Which_general_area_on_campus_are_you_reporting_from}
-            </Text>
-            {!taskPin && (
-              <View style={styles.taskHintContainer}>
-                <Ionicons name="location-outline" size={20} color="#9CA3AF" />
-                <Text style={styles.taskHintText}>Tap on the map to drop a pin</Text>
-              </View>
-            )}
-          </View>
-
-          <View style={styles.taskButtonsContainer}>
-            {taskPin && (
-              <TouchableOpacity
-                style={styles.taskSubmitButton}
-                onPress={handleSubmitTaskPin}
-              >
-                <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
-                <Text style={styles.taskSubmitButtonText}>Submit Location</Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={styles.taskCancelButton}
-              onPress={() => { setShowTaskSheet(false); setActiveTask(null); setTaskPin(null); }}
-            >
-              <Text style={styles.taskCancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
+      {/* Task bottom sheet disabled in simplified mode */}
 
       {/* Task form modal */}
-      {showFormModal && activeTask && (
-        <Modal visible={showFormModal} transparent animationType="slide" onRequestClose={() => setShowFormModal(false)}>
-          <View style={styles.taskFormModalOverlay}>
-            <View style={styles.taskFormModalContainer}>
-              <View style={styles.taskFormHeader}>
-                <View style={styles.taskFormIndicator} />
-                <Text style={styles.taskFormTitle}>Complete Task</Text>
-                <TouchableOpacity
-                  style={styles.taskFormCloseButton}
-                  onPress={() => setShowFormModal(false)}
-                >
-                  <Ionicons name="close" size={24} color="#9CA3AF" />
-                </TouchableOpacity>
-              </View>
-              <ScrollView
-                contentContainerStyle={styles.taskFormContent}
-                showsVerticalScrollIndicator={false}
-              >
-                <TasksForm
-                  questions={Array.isArray(workspaceInfo?.questions) ? workspaceInfo.questions.filter((q: any) => q.text !== 'Which general area on campus are you reporting from?') : []}
-                  initialAnswers={formAnswers}
-                  onSubmit={(answers) => handleSubmitTaskForm(answers)}
-                  onCancel={() => setShowFormModal(false)}
-                />
-              </ScrollView>
-            </View>
-          </View>
-        </Modal>
-      )}
+      {/* Task form modal disabled in simplified mode */}
     </View>
   );
 }
@@ -1377,7 +1364,7 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
   },
-  bubble: {
+  mapPulseBubble: {
     position: 'absolute',
     width: 100,
     height: 100,
@@ -1461,6 +1448,240 @@ const styles = StyleSheet.create({
     elevation: 5,
     maxHeight: '80%',
   },
+  accountModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  accountSheet: {
+    width: '86%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 12,
+    alignSelf: 'center',
+  },
+  accountTitle: {
+    fontSize: 20,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#1F2937',
+  },
+  bubbleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 16,
+    marginBottom: 8,
+    gap: 10,
+  },
+  bubbleColumn: {
+    marginTop: 16,
+    marginBottom: 8,
+    gap: 10,
+  },
+  bubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+  },
+  bubbleText: {
+    marginLeft: 8,
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#1F2937',
+  },
+  expandCard: {
+    marginTop: 10,
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 16,
+    padding: 14,
+  },
+  expandTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#111827',
+    marginBottom: 6,
+  },
+  expandText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: '#4B5563',
+    lineHeight: 20,
+  },
+  introHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 10,
+    paddingHorizontal: 2,
+  },
+  introLogo: {
+    width: 40,
+    height: 40,
+  },
+  introTitle: {
+    fontSize: 18,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#111827',
+  },
+  introSubtitle: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: '#6B7280',
+  },
+  introCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 4,
+    gap: 8,
+  },
+  introParagraph: {
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: '#374151',
+    lineHeight: 20,
+  },
+  introRulesTitle: {
+    fontSize: 15,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#111827',
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  bulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  bulletDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#2563EB',
+    marginTop: 8,
+  },
+  bulletText: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: '#374151',
+    lineHeight: 20,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#E5E7EB',
+    marginVertical: 6,
+  },
+  infoOverlay: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  areaOverlay: {
+    ...StyleSheet.absoluteFillObject as any,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+  areaBackdrop: {
+    ...StyleSheet.absoluteFillObject as any,
+  },
+  areaPanel: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '85%',
+  },
+  infoContainer: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  infoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  infoTitle: {
+    fontSize: 18,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#111827',
+  },
+  infoCloseBtn: {
+    padding: 6,
+    borderRadius: 12,
+    backgroundColor: '#F3F4F6',
+  },
+  infoContent: {
+    padding: 16,
+    gap: 10,
+  },
+  submissionItem: {
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+  },
+  submissionTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#111827',
+    marginBottom: 6,
+  },
+  submissionText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: '#374151',
+  },
+  accountSectionTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: '#374151',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  accountText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: '#4B5563',
+    lineHeight: 20,
+  },
+  accountCloseButton: {
+    marginTop: 8,
+    backgroundColor: '#4A90E2',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  accountCloseButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+  },
   modalTitle: {
     marginTop: 10,
     fontSize: 24,
@@ -1494,6 +1715,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'Poppins_600SemiBold',
     color: '#495057',
+    marginBottom: 8,
+  },
+  required: {
+    color: '#2563EB',
+  },
+  requiredNote: {
+    color: '#6B7280',
+    fontSize: 12,
+    marginLeft: 20,
     marginBottom: 8,
   },
   imagePreview: {
@@ -1577,6 +1807,52 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E9ECEF',
     marginBottom: 10,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  optionPill: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#DBEAFE',
+  },
+  optionPillActive: {
+    backgroundColor: '#2563EB',
+    borderColor: '#2563EB',
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  checkboxBox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
+  checkboxBoxChecked: {
+    backgroundColor: '#2563EB',
+    borderColor: '#2563EB',
+  },
+  checkboxText: {
+    color: '#111827',
+  },
+  errorText: {
+    color: '#EF4444',
+    marginBottom: 8,
+    fontSize: 12,
   },
   uploadWrapper: {
     flexDirection: 'row',
@@ -1745,6 +2021,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  refreshTopButton: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 25,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#E9ECEF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    position: 'absolute',
+    right: 0,
+  },
   refreshButtonDisabled: {
     backgroundColor: '#E9ECEF',
   },
@@ -1854,25 +2144,25 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
   },
-  taskPin: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 3,
-    borderWidth: 2,
-    borderColor: '#4A90E2',
-  },
-  taskPinImage: {
-    width: 24,
-    height: 24,
-  },
+  // taskPin: {
+  //   width: 30,
+  //   height: 30,
+  //   borderRadius: 15,
+  //   backgroundColor: '#FFFFFF',
+  //   justifyContent: 'center',
+  //   alignItems: 'center',
+  //   shadowColor: '#000',
+  //   shadowOffset: { width: 0, height: 2 },
+  //   shadowOpacity: 0.3,
+  //   shadowRadius: 4,
+  //   elevation: 3,
+  //   borderWidth: 2,
+  //   borderColor: '#4A90E2',
+  // },
+  // taskPinImage: {
+  //   width: 24,
+  //   height: 24,
+  // },
   zoomContainer: {
     position: 'absolute',
     bottom: 110,
@@ -1898,18 +2188,24 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     position: 'absolute',
-    top: 65,
-    left: 70,
+    top: 50,
+    left: 20,
     right: 20,
     zIndex: 1000,
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
   },
   searchBarWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderRadius: 25,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
@@ -1917,6 +2213,8 @@ const styles = StyleSheet.create({
     elevation: 3,
     borderWidth: 1,
     borderColor: '#E9ECEF',
+    width: '72%',
+    marginLeft: 10,
   },
   searchIcon: {
     marginRight: 10,
@@ -1931,6 +2229,21 @@ const styles = StyleSheet.create({
   clearButton: {
     marginLeft: 10,
     padding: 2,
+  },
+  accountButton: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 25,
+    padding: 8,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#E9ECEF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    position: 'absolute',
+    left: 0,
   },
   searchResults: {
     backgroundColor: '#FFFFFF',
@@ -1963,159 +2276,159 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     flex: 1,
   },
-  taskBottomSheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 24,
-    paddingBottom: 30,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  taskSheetHeader: {
-    alignItems: 'center',
-    paddingVertical: 16,
-  },
-  taskSheetIndicator: {
-    width: 40,
-    height: 4,
-    backgroundColor: '#E5E7EB',
-    borderRadius: 2,
-    marginBottom: 12,
-  },
-  taskSheetTitle: {
-    fontSize: 20,
-    fontFamily: 'Poppins_600SemiBold',
-    color: '#1F2937',
-    fontWeight: '600',
-  },
-  taskIconContainer: {
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  taskIcon: {
-    width: 64,
-    height: 64,
-  },
-  taskContentContainer: {
-    marginBottom: 24,
-  },
-  taskInstructionText: {
-    fontSize: 16,
-    fontFamily: 'Poppins_400Regular',
-    color: '#374151',
-    textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 16,
-  },
-  taskHintContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F3F4F6',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-  },
-  taskHintText: {
-    fontSize: 14,
-    fontFamily: 'Poppins_400Regular',
-    color: '#6B7280',
-    marginLeft: 8,
-  },
-  taskButtonsContainer: {
-    gap: 12,
-  },
-  taskSubmitButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#4A90E2',
-    paddingVertical: 16,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    shadowColor: '#4A90E2',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  taskSubmitButtonText: {
-    fontSize: 16,
-    fontFamily: 'Poppins_600SemiBold',
-    color: '#FFFFFF',
-    fontWeight: '600',
-    marginLeft: 8,
-  },
-  taskCancelButton: {
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-  taskCancelButtonText: {
-    fontSize: 14,
-    fontFamily: 'Poppins_400Regular',
-    color: '#9CA3AF',
-  },
-  taskFormModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    justifyContent: 'flex-end',
-  },
-  taskFormModalContainer: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    maxHeight: '90%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  taskFormHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
-  },
-  taskFormIndicator: {
-    position: 'absolute',
-    top: 8,
-    left: '50%',
-    marginLeft: -20,
-    width: 40,
-    height: 4,
-    backgroundColor: '#E5E7EB',
-    borderRadius: 2,
-  },
-  taskFormTitle: {
-    fontSize: 20,
-    fontFamily: 'Poppins_600SemiBold',
-    color: '#1F2937',
-    fontWeight: '600',
-    textAlign: 'center',
-    flex: 1,
-  },
-  taskFormCloseButton: {
-    padding: 8,
-    borderRadius: 20,
-    backgroundColor: '#F9FAFB',
-  },
-  taskFormContent: {
-    padding: 24,
-    paddingTop: 16,
-  },
+  // taskBottomSheet: {
+  //   position: 'absolute',
+  //   left: 0,
+  //   right: 0,
+  //   bottom: 0,
+  //   backgroundColor: '#FFFFFF',
+  //   borderTopLeftRadius: 24,
+  //   borderTopRightRadius: 24,
+  //   paddingHorizontal: 24,
+  //   paddingBottom: 30,
+  //   shadowColor: '#000',
+  //   shadowOffset: { width: 0, height: -4 },
+  //   shadowOpacity: 0.15,
+  //   shadowRadius: 8,
+  //   elevation: 8,
+  // },
+  // taskSheetHeader: {
+  //   alignItems: 'center',
+  //   paddingVertical: 16,
+  // },
+  // taskSheetIndicator: {
+  //   width: 40,
+  //   height: 4,
+  //   backgroundColor: '#E5E7EB',
+  //   borderRadius: 2,
+  //   marginBottom: 12,
+  // },
+  // taskSheetTitle: {
+  //   fontSize: 20,
+  //   fontFamily: 'Poppins_600SemiBold',
+  //   color: '#1F2937',
+  //   fontWeight: '600',
+  // },
+  // taskIconContainer: {
+  //   alignItems: 'center',
+  //   marginBottom: 20,
+  // },
+  // taskIcon: {
+  //   width: 64,
+  //   height: 64,
+  // },
+  // taskContentContainer: {
+  //   marginBottom: 24,
+  // },
+  // taskInstructionText: {
+  //   fontSize: 16,
+  //   fontFamily: 'Poppins_400Regular',
+  //   color: '#374151',
+  //   textAlign: 'center',
+  //   lineHeight: 24,
+  //   marginBottom: 16,
+  // },
+  // taskHintContainer: {
+  //   flexDirection: 'row',
+  //   alignItems: 'center',
+  //   justifyContent: 'center',
+  //   backgroundColor: '#F3F4F6',
+  //   paddingVertical: 12,
+  //   paddingHorizontal: 16,
+  //   borderRadius: 12,
+  // },
+  // taskHintText: {
+  //   fontSize: 14,
+  //   fontFamily: 'Poppins_400Regular',
+  //   color: '#6B7280',
+  //   marginLeft: 8,
+  // },
+  // taskButtonsContainer: {
+  //   gap: 12,
+  // },
+  // taskSubmitButton: {
+  //   flexDirection: 'row',
+  //   alignItems: 'center',
+  //   justifyContent: 'center',
+  //   backgroundColor: '#4A90E2',
+  //   paddingVertical: 16,
+  //   paddingHorizontal: 24,
+  //   borderRadius: 12,
+  //   shadowColor: '#4A90E2',
+  //   shadowOffset: { width: 0, height: 4 },
+  //   shadowOpacity: 0.3,
+  //   shadowRadius: 8,
+  //   elevation: 4,
+  // },
+  // taskSubmitButtonText: {
+  //   fontSize: 16,
+  //   fontFamily: 'Poppins_600SemiBold',
+  //   color: '#FFFFFF',
+  //   fontWeight: '600',
+  //   marginLeft: 8,
+  // },
+  // taskCancelButton: {
+  //   alignItems: 'center',
+  //   paddingVertical: 12,
+  // },
+  // taskCancelButtonText: {
+  //   fontSize: 14,
+  //   fontFamily: 'Poppins_400Regular',
+  //   color: '#9CA3AF',
+  // },
+  // taskFormModalOverlay: {
+  //   flex: 1,
+  //   backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  //   justifyContent: 'flex-end',
+  // },
+  // taskFormModalContainer: {
+  //   backgroundColor: '#FFFFFF',
+  //   borderTopLeftRadius: 24,
+  //   borderTopRightRadius: 24,
+  //   maxHeight: '90%',
+  //   shadowColor: '#000',
+  //   shadowOffset: { width: 0, height: -4 },
+  //   shadowOpacity: 0.15,
+  //   shadowRadius: 8,
+  //   elevation: 8,
+  // },
+  // taskFormHeader: {
+  //   flexDirection: 'row',
+  //   alignItems: 'center',
+  //   justifyContent: 'space-between',
+  //   paddingHorizontal: 24,
+  //   paddingTop: 16,
+  //   paddingBottom: 8,
+  //   borderBottomWidth: 1,
+  //   borderBottomColor: '#F3F4F6',
+  // },
+  // taskFormIndicator: {
+  //   position: 'absolute',
+  //   top: 8,
+  //   left: '50%',
+  //   marginLeft: -20,
+  //   width: 40,
+  //   height: 4,
+  //   backgroundColor: '#E5E7EB',
+  //   borderRadius: 2,
+  // },
+  // taskFormTitle: {
+  //   fontSize: 20,
+  //   fontFamily: 'Poppins_600SemiBold',
+  //   color: '#1F2937',
+  //   fontWeight: '600',
+  //   textAlign: 'center',
+  //   flex: 1,
+  // },
+  // taskFormCloseButton: {
+  //   padding: 8,
+  //   borderRadius: 20,
+  //   backgroundColor: '#F9FAFB',
+  // },
+  // taskFormContent: {
+  //   padding: 24,
+  //   paddingTop: 16,
+  // },
   welcomeQuestionContainer: {
     marginBottom: 24,
   },
@@ -2160,5 +2473,63 @@ const styles = StyleSheet.create({
     height: 56,
     width: '100%',
     backgroundColor: 'transparent',
+  },
+  selectField: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  dropdownPanel: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 10,
+    marginBottom: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
+    elevation: 6,
+  },
+  selectFieldText: {
+    fontSize: 16,
+    color: '#111827',
+  },
+  areaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  areaText: {
+    fontSize: 15,
+    color: '#111827',
+    marginLeft: 10,
+  },
+  radioOuter: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#9CA3AF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioOuterActive: {
+    borderColor: '#2563EB',
+  },
+  radioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#2563EB',
   },
 });

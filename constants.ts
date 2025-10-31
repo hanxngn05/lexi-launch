@@ -23,7 +23,7 @@ export const GOOGLE_CLIENT_ID = "1029128656486-sj55218ijb6k0lgi77mhgc995rlvctpq.
 // export const GOOGLE_CLIENT_SECRET = "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";
 
 // Environment Constants
-export const BASE_URL = config?.extra?.baseUrl || 'http://localhost:8081';
+export const BASE_URL = config?.extra?.baseUrl || 'http://10.7.2.99:8081';
 export const APP_SCHEME = 'lexi://';
 export const JWT_SECRET = config?.extra?.jwtSecret || 'default_jwt_secret';
 

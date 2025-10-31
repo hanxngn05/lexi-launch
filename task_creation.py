@@ -6,7 +6,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
-from database_utils import db_operation, sanitize_column_name
+from server.database_utils import db_operation, sanitize_column_name
 from task_config import (AREA_QUESTION_TEXT, ENABLE_DEBUG_LOGS,
                          MAX_AREAS_TO_CREATE_TASKS_FOR, TASK_CREATION_HOUR,
                          TASK_CREATION_MINUTE, TASKS_PER_AREA)

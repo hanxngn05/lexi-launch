@@ -5,15 +5,16 @@
     },
     "name": "lexi",
     "slug": "lexi",
+    "owner": "hanxngn",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/lexi_icon.png",
     "scheme": "com.hanxngn.lexi",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/images/splash.png",
+      "image": "./assets/images/lexi_icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#F0F6FF"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -21,6 +22,11 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.hanxngn.lexi",
+      "splash": {
+        "image": "./assets/images/lexi_icon.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#F0F6FF"
+      },
       "config": {
         "googleMapsApiKey": "AIzaSyDGa8GbaC9fsSExYXOe1oFOzOOCAh5SCT4"
       },
@@ -30,6 +36,13 @@
           "NSAllowsArbitraryLoadsInWebContent": true,
           "NSExceptionDomains": {
             "10.155.6.92": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSExceptionMinimumTLSVersion": "1.0",
+              "NSExceptionRequiresForwardSecrecy": false,
+              "NSIncludesSubdomains": true,
+              "NSExceptionAllowsInsecureHTTPSLoads": true
+            },
+            "10.155.7.118": {
               "NSExceptionAllowsInsecureHTTPLoads": true,
               "NSExceptionMinimumTLSVersion": "1.0",
               "NSExceptionRequiresForwardSecrecy": false,
@@ -47,8 +60,8 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./assets/images/lexi_icon.png",
+        "backgroundColor": "#F0F6FF"
       },
       "edgeToEdgeEnabled": true,
       "package": "com.hanxngn.lexi",
@@ -56,9 +69,6 @@
         "googleMaps": {
           "apiKey": "AIzaSyDGa8GbaC9fsSExYXOe1oFOzOOCAh5SCT4"
         }
-      },
-      "networkSecurityConfig": {
-        "cleartextTrafficPermitted": true
       },
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
@@ -95,12 +105,10 @@
       "typedRoutes": true
     },
     "extra": {
-      "baseUrl": "http://localhost:8081",
+      "baseUrl": "http://10.155.10.90:8081",
       "jwtSecret": "expo_is_the_best",
-      "googleClientId": "1029128656486-6opcvti4ujfk0tddoi12kba545tm62gr.apps.googleusercontent.com",
-      "googleClientSecret": "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",
       "router": {},
-      "serverUrl": "http://10.155.6.92:5000",
+      "serverUrl": "http://10.155.7.118:5000",
       "eas": {
         "projectId": "1fa1d659-5a94-4538-a713-a98ef81dec10"
       }

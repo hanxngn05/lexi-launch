@@ -1,4 +1,5 @@
-import { AuthError, AuthRequestConfig, DiscoveryDocument, makeRedirectUri, useAuthRequest } from "expo-auth-session";
+import Constants from 'expo-constants';
+import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import * as React from "react";
@@ -26,10 +27,11 @@ type AuthContextType = {
   setUser: (user: AuthUser | null) => void;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
+  requestOtp: (email: string) => Promise<boolean>;
+  verifyOtp: (email: string, code: string) => Promise<{ success: boolean; needsProfile?: boolean; email?: string }>;
   fetchWithAuth: (url: string, options?: RequestInit) => Promise<Response>;
   isLoading: boolean;
-  error: AuthError | null;
+  error: Error | null;
 };
 
 const AuthContext = React.createContext<AuthContextType>({
@@ -37,35 +39,35 @@ const AuthContext = React.createContext<AuthContextType>({
   setUser: () => {},
   signIn: async () => {},
   signOut: async () => {},
-  signInWithGoogle: async () => {},
+  requestOtp: async () => false,
+  verifyOtp: async () => ({ success: false }),
   fetchWithAuth: async (url: string, options?: RequestInit) => Promise.resolve(new Response()),
   isLoading: false,
   error: null,
 });
 
-// Use Expo AuthSession proxy so Google sign-in works inside Expo Go
-const redirectUri = (makeRedirectUri as any)({ useProxy: true });
-const config: AuthRequestConfig = {
-  clientId: "1029128656486-sj55218ijb6k0lgi77mhgc995rlvctpq.apps.googleusercontent.com",
-  scopes: ["openid", "profile", "email"],
-  redirectUri,
-  usePKCE: true,
-};
-
-console.log("Using redirect URI:", redirectUri);
-
-const discovery: DiscoveryDocument = {
-  authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-  tokenEndpoint: "https://oauth2.googleapis.com/token",
-};
+const expoOwner = ((Constants?.expoConfig as any)?.owner) || 'anonymous';
+const expoSlug = ((Constants?.expoConfig as any)?.slug) || 'lexi';
+const appOwnership = (Constants as any)?.appOwnership as 'expo' | 'guest' | 'standalone' | undefined;
+const appScheme = ((Constants?.expoConfig as any)?.scheme) || 'com.hanxngn.lexi';
 
 export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
   const [user, setUser] = React.useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = React.useState(false);
-  const [error, setError] = React.useState<AuthError | null>(null);
+  const [error, setError] = React.useState<Error | null>(null);
   const router = useRouter();
 
-  const [request, response, promptAsync] = useAuthRequest(config, discovery);
+  // Warm up SFSafariViewController on iOS to reduce flakiness
+  React.useEffect(() => {
+    WebBrowser.warmUpAsync();
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      console.log('Linking url received:', url);
+    });
+    return () => {
+      WebBrowser.coolDownAsync();
+      sub.remove();
+    };
+  }, []);
 
   const checkUserExists = async (email: string) => {
     try {
@@ -91,139 +93,50 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
     }
   };
 
-  const getUserInfo = async (code: string) => {
+  // OTP: request code
+  const requestOtp = async (email: string) => {
     try {
-      // Use manual PKCE code exchange
-      if (!request) throw new Error('No auth request available');
-      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          code: code,
-          client_id: config.clientId,
-          redirect_uri: config.redirectUri,
-          grant_type: 'authorization_code',
-          code_verifier: request.codeVerifier || '',
-        }).toString(),
-      });
-
-      if (!tokenResponse.ok) {
-        const errorText = await tokenResponse.text();
-        console.error('Token response error:', errorText);
-        throw new Error('Failed to get tokens from Google');
-      }
-
-      const { access_token } = await tokenResponse.json();
-
-      // Get user info from Google
-      const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: {
-          Authorization: `Bearer ${access_token}`,
-        },
-      });
-
-      if (!userInfoResponse.ok) {
-        throw new Error('Failed to get user info from Google');
-      }
-
-      const googleUserData = await userInfoResponse.json();
-
-      // Check if we have this user in our database
-      const existingUser = await checkUserExists(googleUserData.email);
-
-      if (existingUser) {
-        // Return the user data from our database
-        return {
-          id: existingUser.id,
-          email: existingUser.email,
-          name: existingUser.name,
-          picture: googleUserData.picture,
-          given_name: googleUserData.given_name,
-          family_name: googleUserData.family_name,
-          email_verified: googleUserData.verified_email,
-          provider: 'google',
-          role: existingUser.role,
-          workspaces: existingUser.workspaces,
-        };
-      } else {
-        // For new users, don't save to database yet - let onboarding handle it
-        const newUserData = {
-          id: 'google_' + googleUserData.id,
-          email: googleUserData.email,
-          name: googleUserData.name,
-          picture: googleUserData.picture,
-          given_name: googleUserData.given_name,
-          family_name: googleUserData.family_name,
-          email_verified: googleUserData.verified_email,
-          provider: 'google',
-          role: undefined, // Will be set during onboarding
-        };
-
-        // Don't save to database yet - onboarding will handle this
-        return newUserData;
-      }
-    } catch (error) {
-      console.error('Error getting user info:', error);
-      throw error;
+      if (!email) return false;
+      setIsLoading(true);
+      const res = await api.requestOtpCode(email);
+      return !!res?.success;
+    } catch (e) {
+      setError(e as Error);
+      return false;
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  React.useEffect(() => {
-    if (response?.type === 'success') {
-      const { code } = response.params;
-      setIsLoading(true);
-
-      getUserInfo(code)
-        .then(userData => {
-          setUser(userData);
-          // Navigate directly to the Lexi workspace if available
-          const goToLexi = async () => {
-            try {
-              const workspacesData: any = await api.getWorkspaces();
-              const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
-                typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
-              );
-              if (lexiWorkspace?.id) {
-                router.replace(`/workspace/${lexiWorkspace.id}`);
-                return;
-              }
-            } catch (e) {
-              console.error('Failed to locate Lexi workspace:', e);
-            }
-            // Fallback if Lexi workspace couldn't be found
-            router.replace('/home');
-          };
-          setTimeout(goToLexi, 50);
-        })
-        .catch(error => {
-          console.error('Auth error:', error);
-          setError(error as AuthError);
-        })
-        .finally(() => {
-          setIsLoading(false);
-        });
-    } else if (response?.type === 'error') {
-      console.error('OAuth error:', response.error);
-      setError(response.error as AuthError);
-    }
-  }, [response, router]);
-
-  const signInWithGoogle = async () => {
+  // OTP: verify code
+  const verifyOtp = async (email: string, code: string) => {
     try {
-      if (!request) {
-        return;
+      setIsLoading(true);
+      const res: any = await api.verifyOtpCode(email, code);
+      const needsProfile = Boolean(res?.needsProfile ?? res?.needs_profile);
+      const verifiedEmail = (res?.email ?? res?.user?.email ?? email) as string;
+      if (res?.success && needsProfile) {
+        return { success: true, needsProfile: true, email: verifiedEmail };
       }
-      await (promptAsync as any)({ useProxy: true });
-    }
-    catch (e) {
-      console.log(e)
+      if (res?.success && res?.user) {
+        setUser(res.user);
+        const serverConsent = Boolean((res.user as any)?.consent_given);
+        const showConsent = !serverConsent;
+        const consentMessage = 'You are being asked to take part in a research study for collecting information about languages used on campus. For the purposes of this project, a task involves answering a few short questions on a language that you heard around campus. Please read this consent form carefully, and ask any questions you may have before signing up for participation.\n\nQuestions should be directed to the project advisors, Yoolim Kim <ykim6@wellesley.edu>, Catherine Delcourt <cdelcour@wellesley.edu>, and Christine Bassem <cbassem@wellesley.edu>.\n\nWhat is this project about? The purpose of this study is to understand the use of different languages on campus, and strengthen communities with shared languages.\n\nWhat we will ask you to do? Once the study starts, you will be asked to submit information about languages that you recognize around campus.\n\nOnly actions directly related to the Lexi in Wellesley environment will be collected.\n\nTaking part is voluntary.\n\nHow do I provide my consent? Tap “I Agree”.';
+
+        router.replace(showConsent ? '/consent' : '/workspace/lexi');
+        return { success: true };
+      }
+      return { success: false };
+    } catch (e) {
+      setError(e as Error);
+      return { success: false };
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const signIn = async (email: string, password: string) => {
-    // Mock sign-in for now
     const mockUser = {
       id: '1',
       email,
@@ -231,19 +144,6 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
     };
 
     setUser(mockUser);
-    // After mock sign-in, route to Lexi workspace if available
-    try {
-      const workspacesData: any = await api.getWorkspaces();
-      const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
-        typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
-      );
-      if (lexiWorkspace?.id) {
-        router.replace(`/workspace/${lexiWorkspace.id}`);
-        return;
-      }
-    } catch (e) {
-      console.error('Failed to locate Lexi workspace after mock sign-in:', e);
-    }
     router.replace('/home');
   };
 
@@ -253,7 +153,6 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
   };
 
   const fetchWithAuth = async (url: string, options?: RequestInit) => {
-    // Implement authenticated fetch
     return new Response();
   };
 
@@ -263,7 +162,8 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
       setUser,
       signIn,
       signOut,
-      signInWithGoogle,
+      requestOtp,
+      verifyOtp,
       fetchWithAuth,
       isLoading,
       error,

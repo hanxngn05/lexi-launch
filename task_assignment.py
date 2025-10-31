@@ -4,7 +4,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from database_utils import db_operation, expire_old_tasks, sanitize_column_name
+from server.database_utils import db_operation, expire_old_tasks, sanitize_column_name
 # from sentiment_analysis import get_entity_analyzer  # COMMENTED OUT - Using proximity only
 from task_config import (AREA_QUESTION_TEXT, ASSIGNMENT_HOURS,
                          ENABLE_DEBUG_LOGS, MAX_TASKS_PER_DAY, PROXIMITY_BONUS,

@@ -1,19 +1,22 @@
 import json
 import os
 import re
+import secrets
+import smtplib
+import ssl
 import threading
 import time
 import traceback
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import pymysql
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from helper_functions import connectDB
 
-from database_utils import db_operation, expire_old_tasks, sanitize_column_name
+from database_utils import db_operation
 
 # from sentiment_analysis import sentiment_analyzer  # COMMENTED OUT - Using proximity only
 
@@ -24,25 +27,180 @@ load_dotenv(env_path)
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-def create_workspace_response_table(workspace_id, questions):
-    table_name = f"workspace_{workspace_id}_responses"
-    columns = [
-        "id INT AUTO_INCREMENT PRIMARY KEY",
-        "task_id VARCHAR(255) UNIQUE",
-        "time_task_created DATETIME",
-        "time_task_assigned DATETIME",
-        "time_task_responded DATETIME",
-        "time_completed DATETIME",
-        "user_id VARCHAR(255)",
-        "latitude DECIMAL(10, 8)",
-        "longitude DECIMAL(11, 8)",
-        "task_status VARCHAR(32)"
-    ]
-    for q in questions:
-        col = sanitize_column_name(q['text'])
-        columns.append(f"`{col}` TEXT")
-    query = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(columns)})"
-    return db_operation(query)
+# In-memory OTP store for demo/testing in Expo Go. For production, use Redis/DB.
+# Structure: { email_lower: { code: str, issued_at: int, used: bool } }
+otp_store = {}
+OTP_TTL_SECONDS = 300  # 5 minutes
+OTP_LENGTH = 6
+
+# SMTP configuration (set via environment). Defaults are safe no-ops.
+SMTP_HOST = os.environ.get('SMTP_HOST', '')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
+SMTP_USER = os.environ.get('SMTP_USER', '')
+SMTP_PASS = os.environ.get('SMTP_PASS', '')
+FROM_EMAIL = os.environ.get('FROM_EMAIL', 'hn103@wellesley.edu')
+
+# OTP/dev configuration
+EXPOSE_OTP_IN_RESPONSE = os.environ.get('EXPOSE_OTP_IN_RESPONSE', '1') == '1'
+BYPASS_OTP_RATE_LIMIT = os.environ.get('BYPASS_OTP_RATE_LIMIT', '1') == '1'
+SMTP_DEBUG = os.environ.get('SMTP_DEBUG', '0') == '1'
+SMTP_LAST_ERROR = None
+
+def send_otp_email(to_email: str, code: str) -> bool:
+    """Send OTP email via SMTP if configured; return True on best-effort success.
+    If SMTP is not configured, return False so caller can log fallback.
+    """
+    try:
+        if not SMTP_HOST or not FROM_EMAIL:
+            return False
+        subject = "Your Lexi verification code"
+        body = (
+            f"Hi from Lexi! Your verification code is {code}. It expires in 5 minutes. "
+            f"If you didn't request this, please ignore this email and contact hn103@wellesley.edu! Thank you!"
+        )
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = FROM_EMAIL
+        msg['To'] = to_email
+
+        context = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+            if SMTP_DEBUG:
+                server.set_debuglevel(1)
+            server.ehlo()
+            try:
+                server.starttls(context=context)
+                server.ehlo()
+            except Exception:
+                pass  # Some servers may not require/start TLS
+            if SMTP_USER and SMTP_PASS:
+                server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(FROM_EMAIL, [to_email], msg.as_string())
+        return True
+    except Exception as e:
+        global SMTP_LAST_ERROR
+        SMTP_LAST_ERROR = str(e)
+        print(f"[OTP] Email send failed for {to_email}: {e}")
+        return False
+
+def create_workspace_response_table(*_args, **_kwargs):
+    # Legacy no-op kept for backward compatibility
+    return True
+
+##########################
+# New simplified Lexi schema
+##########################
+
+# Allowed campus areas (categorical question)
+LEXI_AREAS = [
+    "The Quint (Beebe, Cazenove, Pomeroy, Shafer, Munger)",
+    "East Side (Bates, Freeman, McAfee)",
+    "Stone Davis",
+    "Tower Court (East, West, Claflin, Severance)",
+    "Academic Quad (Green, Founders, PNE/PNW, Jewett)",
+    "Science Center",
+    "Modular Units",
+    "Lulu Chow Wang Campus Center",
+    "Keohane Sports Center (KSC)",
+    "Acorns",
+    "Billings",
+    "Harambee House",
+    "Slater House",
+    "Lake House",
+    "On the Local Motion (‘What time do you take the bus?’)",
+    "Bus stops (Chapel, Lulu, Founders)",
+    "Shakespeare Houses",
+    "TZE House",
+    "ZA House",
+    "French House",
+    "Casa Cervantes",
+    "Other",
+]
+
+# Determination methods options (checkbox list)
+LEXI_DETERMINATION_OPTIONS = [
+    "I am a speaker of this language",
+    "I’ve heard this language online or in media (movies, TV, music, etc.)",
+    "My family speaks this language",
+    "I’m currently learning this language",
+    "My friends use this language",
+    "I know a language in the same family (eg. romance)",
+    "Other",
+]
+
+
+def add_column_if_missing(table: str, column: str, definition: str):
+    try:
+        exists = db_operation(f"SHOW COLUMNS FROM {table} LIKE %s", [column], fetch_one=True)
+        if not exists:
+            db_operation(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    except Exception:
+        pass
+
+
+def create_lexi_tables():
+    """Create simplified Lexi tables: users_lexi and lexi."""
+    users_table = (
+        """
+        CREATE TABLE IF NOT EXISTS users_lexi (
+            user_id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            anchor_answer JSON,
+            consent_given TINYINT(1) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    responses_table = (
+        """
+        CREATE TABLE IF NOT EXISTS lexi (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            general_area VARCHAR(255) NOT NULL,
+            specific_location TEXT NOT NULL,
+            language_spoken VARCHAR(255) NOT NULL,
+            num_speakers INT NOT NULL,
+            was_part_of_conversation TINYINT(1) NOT NULL,
+            followup_details TEXT,
+            comfortable_to_ask_more ENUM('Yes','No','I don\'t know') NULL,
+            go_up_to_speakers ENUM('Yes','No','I don\'t know') NULL,
+            determination_methods JSON NOT NULL,
+            determination_other_text TEXT,
+            latitude DECIMAL(10, 8) NULL,
+            longitude DECIMAL(11, 8) NULL,
+            CONSTRAINT fk_lexi_user FOREIGN KEY (user_id) REFERENCES users_lexi(user_id)
+        )
+        """
+    )
+    ok1 = db_operation(users_table)
+    ok2 = db_operation(responses_table)
+    # Ensure consent_given exists for older deployments
+    add_column_if_missing('users_lexi', 'consent_given', "TINYINT(1) DEFAULT 0")
+    # Migrate optional follow-up columns on lexi (MySQL 5.7-safe)
+    add_column_if_missing('lexi', 'go_up_to_speakers', "ENUM('Yes','No','I don't know') NULL")
+    add_column_if_missing('lexi', 'speaker_said_audio_url', 'TEXT NULL')
+    add_column_if_missing('lexi', 'speaker_origin', 'TEXT NULL')
+    add_column_if_missing('lexi', 'speaker_cultural_background', 'TEXT NULL')
+    add_column_if_missing('lexi', 'speaker_dialect', 'TEXT NULL')
+    add_column_if_missing('lexi', 'speaker_context', 'TEXT NULL')
+    add_column_if_missing('lexi', 'speaker_proficiency', 'VARCHAR(255) NULL')
+    add_column_if_missing('lexi', 'speaker_gender_identity', "ENUM('Female','Male','Transgender','Non-binary / Gender nonconforming','Prefer not to say','Other') NULL")
+    add_column_if_missing('lexi', 'speaker_gender_other_text', 'TEXT NULL')
+    add_column_if_missing('lexi', 'speaker_academic_level', "ENUM('Freshman','Sophomore','Junior','Senior','Davis Scholar','Faculty/Staff','Pre-college','Non Wellesley-affiliated adult') NULL")
+    add_column_if_missing('lexi', 'additional_comments', 'TEXT NULL')
+    add_column_if_missing('lexi', 'outstanding_questions', 'TEXT NULL')
+    return ok1 and ok2
+
+
+@app.route('/create-lexi-tables', methods=['POST'])
+def create_lexi_tables_route():
+    try:
+        created = create_lexi_tables()
+        return jsonify({"success": bool(created)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 def get_latest_query_time():
     try:
@@ -61,74 +219,11 @@ def append_latest_query_time():
 
 # Initialize task management system (only once)
 def initialize_task_system():
-    # Use a lock file to prevent multiple initializations
-    lock_file = 'task_system.lock'
-
-    if os.path.exists(lock_file):
-        # Check if the lock is stale (older than 5 minutes)
-        lock_time = os.path.getmtime(lock_file)
-        if time.time() - lock_time > 300:  # 5 minutes
-            os.remove(lock_file)
-        else:
-            print("[TaskSystem] Another instance is already running")
-            return
-
-    # Create lock file
-    with open(lock_file, 'w') as f:
-        f.write(str(time.time()))
-
-    try:
-        # Initialize task generation and assignment
-        print("[TaskSystem] Initializing task generation and assignment...")
-
-        # Import task modules
-        import task_assignment
-        import task_creation
-
-        # Start task generation in a separate thread
-        def run_task_generation():
-            try:
-                # Only start if tasks haven't been created today
-                if not task_creation.tasks_already_created_today():
-                    print("[TaskSystem] Starting task creation thread...")
-                    task_creation.run_scheduled_task_creation()
-                else:
-                    print("[TaskSystem] Tasks already created today, skipping task creation thread")
-            except Exception as e:
-                print(f"[TaskGeneration] Error: {e}")
-
-        # Start task assignment in a separate thread
-        def run_task_assignment():
-            try:
-                print("[TaskSystem] Starting task assignment thread...")
-                task_assignment.run_scheduled_task_assignment()
-            except Exception as e:
-                print(f"[TaskAssignment] Error: {e}")
-
-        # Start both threads
-        import threading
-        generation_thread = threading.Thread(target=run_task_generation, daemon=True)
-        assignment_thread = threading.Thread(target=run_task_assignment, daemon=True)
-
-        generation_thread.start()
-        assignment_thread.start()
-
-        print("[TaskSystem] Task generation and assignment threads started")
-
-    finally:
-        def cleanup_lock():
-            try:
-                if os.path.exists(lock_file):
-                    os.remove(lock_file)
-            except:
-                pass
-
-        # Set up cleanup on exit
-        import atexit
-        atexit.register(cleanup_lock)
+    # Simplified mode: task system disabled
+    return
 
 # Initialize task system
-initialize_task_system()
+# initialize_task_system()  # Disabled in simplified mode
 
 ''' Routes '''
 # Testing endpoint
@@ -139,207 +234,186 @@ def hello():
         "timestamp": datetime.now().isoformat(),
         "server_info": "HTTP on port 5000"
     })
+@app.route('/auth/request-code', methods=['POST'])
+def request_code():
+    try:
+        data = request.json or {}
+        email = (data.get('email') or '').strip().lower()
+        if not email or '@' not in email:
+            return jsonify({'success': False, 'error': 'Invalid email'}), 400
+
+        # Always generate a fresh OTP and overwrite previous one
+        now = int(time.time())
+        code = f"{secrets.randbelow(10**OTP_LENGTH):0{OTP_LENGTH}d}"
+        # Store only the latest code for this email
+        otp_store[email] = { 'code': code, 'issued_at': now, 'used': False }
+
+        # Log request and code for development visibility
+        print(f"[OTP] Request received for {email}")
+        print(f"[OTP] Code for {email}: {code}")
+
+        # Try to send email (best effort). Even if SMTP fails, allow client to proceed.
+        mailed = send_otp_email(email, code)
+        msg = 'Verification code sent' if mailed else 'Code generated (check server logs); email delivery not configured'
+
+        payload = {'success': True, 'message': msg}
+        if EXPOSE_OTP_IN_RESPONSE:
+            payload['dev_code'] = code
+            if not mailed and SMTP_LAST_ERROR:
+                payload['smtp_error'] = SMTP_LAST_ERROR
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/auth/verify-code', methods=['POST'])
+def verify_code():
+    try:
+        data = request.json or {}
+        email = (data.get('email') or '').strip().lower()
+        code = (data.get('code') or '').strip()
+        # Normalize to digits only to avoid stray characters from mobile keyboards
+        try:
+            code = re.sub(r'\D', '', code)
+        except Exception:
+            pass
+        if not email or not code:
+            # Return 200 with success:false for better client UX (avoid fetch throwing on 4xx)
+            payload = {'success': False, 'error': 'Missing email or code'}
+            if EXPOSE_OTP_IN_RESPONSE:
+                payload['dev_reason'] = 'missing_parameters'
+            return jsonify(payload), 200
+
+        record = otp_store.get(email)
+        if not record:
+            payload = {'success': False, 'error': 'Code not found'}
+            if EXPOSE_OTP_IN_RESPONSE:
+                payload['dev_reason'] = 'no_record_for_email'
+            return jsonify(payload), 200
+
+        # Validate against single latest record
+        now = int(time.time())
+        stored_code = str(record.get('code', ''))
+        stored_issued_at = int(record.get('issued_at', 0))
+        stored_used = bool(record.get('used', False))
+
+        if stored_used:
+            payload = {'success': False, 'error': 'Code already used'}
+            if EXPOSE_OTP_IN_RESPONSE:
+                payload['dev_reason'] = 'used_flag_set'
+            return jsonify(payload), 200
+
+        if now - stored_issued_at > OTP_TTL_SECONDS:
+            payload = {'success': False, 'error': 'Code expired'}
+            if EXPOSE_OTP_IN_RESPONSE:
+                payload['dev_reason'] = 'expired_latest'
+            return jsonify(payload), 200
+
+        if stored_code != code:
+            payload = {'success': False, 'error': 'Invalid code'}
+            if EXPOSE_OTP_IN_RESPONSE:
+                payload['dev_reason'] = 'mismatch_latest'
+                payload['dev_latest'] = stored_code
+            return jsonify(payload), 200
+
+        # Mark used and persist
+        otp_store[email] = { 'code': stored_code, 'issued_at': stored_issued_at, 'used': True }
+        try:
+            print(f"[OTP] Verified for {email}. code={stored_code}")
+        except Exception:
+            pass
+
+        # Look up existing user only in users_lexi
+        lexi_user = db_operation('SELECT * FROM users_lexi WHERE email = %s', [email], fetch_one=True)
+        if not lexi_user:
+            return jsonify({'success': True, 'needs_profile': True, 'email': email})
+        session = {
+            'id': lexi_user['user_id'],
+            'email': lexi_user['email'],
+            'name': lexi_user['name'],
+            'role': 'user',
+            'consent_given': int(lexi_user.get('consent_given', 0))
+        }
+        return jsonify({'success': True, 'user': session})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route("/test-users", methods=['GET'])
 def test_users():
     try:
-        # Check if table exists
-        table_exists = db_operation("SHOW TABLES LIKE 'users_updated'", fetch_one=True)
-
+        table_exists = db_operation("SHOW TABLES LIKE 'users_lexi'", fetch_one=True)
         if not table_exists:
             return jsonify({
-                "error": "users_updated table does not exist",
+                "error": "users_lexi table does not exist",
                 "timestamp": datetime.now().isoformat()
             })
-
-        # Get all users
-        users = db_operation("SELECT id, name, email, role FROM users_updated", fetch_all=True)
-
+        users = db_operation("SELECT user_id, name, email, created_at FROM users_lexi", fetch_all=True) or []
         return jsonify({
             "table_exists": True,
-            "user_count": len(users) if users else 0,
-            "users": users if users else [],
+            "user_count": len(users),
+            "users": users,
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
+        return jsonify({"error": str(e), "timestamp": datetime.now().isoformat()}), 500
 
 @app.route("/test-db", methods=['GET'])
 def test_db():
     try:
-        # Test if users_updated table exists
-        tables = db_operation("SHOW TABLES LIKE 'users_updated'", fetch_one=True)
-        users_table_exists = tables is not None
-
-        # Test if workspaces table exists
-        workspaces_table = db_operation("SHOW TABLES LIKE 'workspaces'", fetch_one=True)
-        workspaces_table_exists = workspaces_table is not None
-
-        # Count users in users_updated table
+        users_table = db_operation("SHOW TABLES LIKE 'users_lexi'", fetch_one=True)
+        responses_table = db_operation("SHOW TABLES LIKE 'lexi'", fetch_one=True)
         user_count = 0
-        if users_table_exists:
-            count_result = db_operation("SELECT COUNT(*) as cnt FROM users_updated", fetch_one=True)
-            user_count = count_result['cnt'] if count_result else 0
-
+        if users_table:
+            result = db_operation("SELECT COUNT(*) as cnt FROM users_lexi", fetch_one=True)
+            user_count = (result or {}).get('cnt', 0)
         return jsonify({
-            "users_table_exists": users_table_exists,
-            "workspaces_table_exists": workspaces_table_exists,
+            "users_lexi_exists": users_table is not None,
+            "lexi_exists": responses_table is not None,
             "user_count": user_count,
             "timestamp": datetime.now().isoformat()
         })
     except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
+        return jsonify({"error": str(e), "timestamp": datetime.now().isoformat()}), 500
 
 @app.route("/create-tables", methods=['POST'])
 def create_tables():
     try:
-        # Create users_updated table if it doesn't exist
-        users_table_query = '''
-        CREATE TABLE IF NOT EXISTS users_updated (
-            id VARCHAR(255) PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            email VARCHAR(255) UNIQUE NOT NULL,
-            role VARCHAR(50) DEFAULT 'user',
-            workspaces JSON,
-            anchor_answers JSON,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )
-        '''
-        users_result = db_operation(users_table_query)
-
-        # Create workspaces table if it doesn't exist
-        workspaces_table_query = '''
-        CREATE TABLE IF NOT EXISTS workspaces (
-            id VARCHAR(255) PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            description TEXT,
-            developer VARCHAR(255),
-            questions JSON,
-            main_question VARCHAR(500),
-            main_data_type VARCHAR(255),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )
-        '''
-        workspaces_result = db_operation(workspaces_table_query)
-
-        return jsonify({
-            "users_table_created": users_result,
-            "workspaces_table_created": workspaces_result,
-            "message": "Tables created successfully"
-        })
+        created = create_lexi_tables()
+        return jsonify({"success": bool(created)})
     except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "message": "Failed to create tables"
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route("/task-status", methods=['GET'])
-def get_task_status():
-    """Get the current status of task creation and assignment"""
-    try:
-        import task_assignment
-        import task_creation
+# /task-status disabled in simplified mode
 
-        tasks_created_today = task_creation.tasks_already_created_today()
-        has_unassigned = task_assignment.has_unassigned_tasks()
-        has_eligible_users = task_assignment.has_eligible_users()
-        should_run_assignment = task_assignment.should_assign_tasks()
-
-        return jsonify({
-            "tasks_created_today": tasks_created_today,
-            "has_unassigned_tasks": has_unassigned,
-            "has_eligible_users": has_eligible_users,
-            "should_run_assignment": should_run_assignment,
-            "task_creation_scheduled": f"{task_creation.TASK_CREATION_HOUR}:{task_creation.TASK_CREATION_MINUTE:02d}",
-            "task_assignment_scheduled": task_assignment.ASSIGNMENT_HOURS,
-            "timestamp": datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        })
-
-# Get all users from users_updated table
 @app.route('/users', methods=['GET'])
 def get_users():
-    query = 'SELECT * FROM users_updated ORDER BY created_at DESC'
-    result = db_operation(query, fetch_all=True)
-    # Ensure workspaces and anchor_answers are always properly formatted
-    for user in (result or []):
-        if 'workspaces' in user and user['workspaces']:
-            try:
-                user['workspaces'] = json.loads(user['workspaces'])
-            except Exception:
-                user['workspaces'] = []
-        else:
-            user['workspaces'] = []
-
-        if 'anchor_answers' in user and user['anchor_answers']:
-            try:
-                user['anchor_answers'] = json.loads(user['anchor_answers'])
-            except Exception:
-                user['anchor_answers'] = {}
-        else:
-            user['anchor_answers'] = {}
-    return jsonify(result if result else [])
+    query = 'SELECT user_id as id, name, email, anchor_answer, consent_given, created_at FROM users_lexi ORDER BY created_at DESC'
+    rows = db_operation(query, fetch_all=True) or []
+    for u in rows:
+        try:
+            if isinstance(u.get('anchor_answer'), str):
+                u['anchor_answer'] = json.loads(u['anchor_answer'])
+        except Exception:
+            u['anchor_answer'] = []
+    return jsonify(rows)
 
 @app.route('/users/<email>', methods=['GET'])
 def get_user_by_email(email):
     print(f"[DEBUG] Getting user by email: {email}")
     try:
-        # First check if the table exists
-        table_check = db_operation("SHOW TABLES LIKE 'users_updated'", fetch_one=True)
-        print(f"[DEBUG] Table check result: {table_check}")
-
-        if not table_check:
-            print("[DEBUG] users_updated table does not exist!")
-            return jsonify({"error": "Table does not exist"}), 500
-
-        # Check if there are any users in the table
-        count_result = db_operation("SELECT COUNT(*) as cnt FROM users_updated", fetch_one=True)
-        print(f"[DEBUG] Total users in table: {count_result}")
-
-        # Get the specific user
-        query = 'SELECT * FROM users_updated WHERE email = %s'
-        result = db_operation(query, [email], fetch_one=True)
+        # Get the specific user from users_lexi
+        result = db_operation('SELECT user_id as id, name, email, anchor_answer, consent_given, created_at FROM users_lexi WHERE email = %s', [email], fetch_one=True)
         print(f"[DEBUG] User query result: {result}")
 
         if result:
             print(f"[DEBUG] Raw result from database: {result}")
-            # Handle workspaces field
-            if 'workspaces' in result and result['workspaces']:
+            if 'anchor_answer' in result and result['anchor_answer']:
                 try:
-                    if isinstance(result['workspaces'], str):
-                        result['workspaces'] = json.loads(result['workspaces'])
-                    else:
-                        result['workspaces'] = result['workspaces']
+                    if isinstance(result['anchor_answer'], str):
+                        result['anchor_answer'] = json.loads(result['anchor_answer'])
                 except Exception as e:
-                    print(f"[DEBUG] Error parsing workspaces JSON: {e}")
-                    result['workspaces'] = []
-            else:
-                result['workspaces'] = []
-
-            # Handle anchor_answers field
-            if 'anchor_answers' in result and result['anchor_answers']:
-                try:
-                    if isinstance(result['anchor_answers'], str):
-                        result['anchor_answers'] = json.loads(result['anchor_answers'])
-                    else:
-                        result['anchor_answers'] = result['anchor_answers']
-                except Exception as e:
-                    print(f"[DEBUG] Error parsing anchor_answers JSON: {e}")
-                    result['anchor_answers'] = {}
-            else:
-                result['anchor_answers'] = {}
+                    print(f"[DEBUG] Error parsing anchor_answer JSON: {e}")
+                    result['anchor_answer'] = []
 
             print(f"[DEBUG] Final user data to return: {result}")
             return jsonify(result)
@@ -354,46 +428,18 @@ def get_user_by_email(email):
 def get_user_by_id(user_id):
     print(f"[DEBUG] Getting user by ID: {user_id}")
     try:
-        # First check if the table exists
-        table_check = db_operation("SHOW TABLES LIKE 'users_updated'", fetch_one=True)
-        print(f"[DEBUG] Table check result: {table_check}")
-
-        if not table_check:
-            print("[DEBUG] users_updated table does not exist!")
-            return jsonify({"error": "Table does not exist"}), 500
-
-        # Get the specific user by ID
-        query = 'SELECT * FROM users_updated WHERE id = %s'
-        result = db_operation(query, [user_id], fetch_one=True)
+        result = db_operation('SELECT user_id as id, name, email, anchor_answer, consent_given, created_at FROM users_lexi WHERE user_id = %s', [user_id], fetch_one=True)
         print(f"[DEBUG] User query result: {result}")
 
         if result:
             print(f"[DEBUG] Raw result from database: {result}")
-            # Handle workspaces field
-            if 'workspaces' in result and result['workspaces']:
+            if 'anchor_answer' in result and result['anchor_answer']:
                 try:
-                    if isinstance(result['workspaces'], str):
-                        result['workspaces'] = json.loads(result['workspaces'])
-                    else:
-                        result['workspaces'] = result['workspaces']
+                    if isinstance(result['anchor_answer'], str):
+                        result['anchor_answer'] = json.loads(result['anchor_answer'])
                 except Exception as e:
-                    print(f"[DEBUG] Error parsing workspaces JSON: {e}")
-                    result['workspaces'] = []
-            else:
-                result['workspaces'] = []
-
-            # Handle anchor_answers field
-            if 'anchor_answers' in result and result['anchor_answers']:
-                try:
-                    if isinstance(result['anchor_answers'], str):
-                        result['anchor_answers'] = json.loads(result['anchor_answers'])
-                    else:
-                        result['anchor_answers'] = result['anchor_answers']
-                except Exception as e:
-                    print(f"[DEBUG] Error parsing anchor_answers JSON: {e}")
-                    result['anchor_answers'] = {}
-            else:
-                result['anchor_answers'] = {}
+                    print(f"[DEBUG] Error parsing anchor_answer JSON: {e}")
+                    result['anchor_answer'] = []
 
             print(f"[DEBUG] Final user data to return: {result}")
             return jsonify(result)
@@ -406,467 +452,262 @@ def get_user_by_id(user_id):
 
 @app.route('/users', methods=['POST'])
 def create_user():
-    data = request.json
-    email = data['email']
-    name = data['name']
-    role = data.get('role', 'user')
+    data = request.json or {}
+    email = (data.get('email') or '').strip().lower()
+    name = (data.get('name') or '').strip()
+    consent = bool(data.get('consent') or False)
+    anchor_answer_payload = data.get('anchor_answer')
 
-    print(f"[DEBUG] Creating user: email={email}, name={name}, role={role}")
+    if not email or not name:
+        return jsonify({"success": False, "error": "Missing name or email"}), 400
 
-    # Generate a unique ID
+    print(f"[DEBUG] Creating first-time user: email={email}, name={name}")
+
+    import json as _json
     import uuid
     user_id = str(uuid.uuid4())
-    print(f"[DEBUG] Generated user ID: {user_id}")
 
     try:
-        query = '''
-            INSERT INTO users_updated (id, name, email, role)
-            VALUES (%s, %s, %s, %s)
+        # Ensure simplified tables exist
+        create_lexi_tables()
+
+        # Create in users_lexi
+        insert_lexi = '''
+            INSERT INTO users_lexi (user_id, name, email, anchor_answer, consent_given)
+            VALUES (%s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
             name = VALUES(name),
-            role = VALUES(role),
-            updated_at = CURRENT_TIMESTAMP
+                anchor_answer = VALUES(anchor_answer),
+                consent_given = VALUES(consent_given),
+                created_at = created_at
         '''
-        result = db_operation(query, [user_id, name, email, role])
-        print(f"[DEBUG] User creation result: {result}")
-
-        # Return the created user data instead of just success
-        if result:
-            user = db_operation('SELECT * FROM users_updated WHERE email = %s', [email], fetch_one=True)
-            print(f"[DEBUG] Created user data: {user}")
-            return jsonify({"success": True, "user": user})
+        if anchor_answer_payload is None:
+            anchor_answer_json = _json.dumps([])
         else:
-            print(f"[DEBUG] User creation failed")
+            if not isinstance(anchor_answer_payload, list):
+                return jsonify({"success": False, "error": "anchor_answer must be array of strings"}), 400
+            anchor_answer_json = _json.dumps(anchor_answer_payload)
+        result_lexi = db_operation(insert_lexi, [user_id, name, email, anchor_answer_json, 1 if consent else 0])
+
+        if result_lexi:
+            user = db_operation('SELECT * FROM users_lexi WHERE email = %s', [email], fetch_one=True)
+            if user:
+                session = {
+                    'id': user['user_id'],
+                    'email': user['email'],
+                    'name': user['name'],
+                    'role': 'user',
+                    'consent_given': int(user.get('consent_given', 0))
+                }
+                return jsonify({"success": True, "user": session})
             return jsonify({"success": False, "error": "Failed to create user"})
     except Exception as e:
         print(f"[DEBUG] Exception in user creation: {e}")
         return jsonify({"success": False, "error": str(e)})
 
-# Get all responses (keeping original table for Slack data)
-@app.route('/responses', methods=['GET'])
-def get_all_responses():
-    query = '''
-    SELECT r.*, u.username, u.status
-    FROM responses r
-    LEFT JOIN users u ON r.user_id = u.id
-    ORDER BY r.submission_time DESC
-    '''
-    result = db_operation(query, fetch_all=True)
-    return jsonify(result if result else [])
+# Legacy responses endpoints disabled in simplified mode
 
-# Get response by ID
-@app.route('/responses/<int:response_id>', methods=['GET'])
-def get_response_by_id(response_id):
-    query = '''
-    SELECT r.*, u.username, u.status
-    FROM responses r
-    LEFT JOIN users u ON r.user_id = u.id
-    WHERE r.response_id = %s
-    '''
-    result = db_operation(query, [response_id], fetch_one=True)
-    return jsonify(result if result else {})
+# Legacy workspace endpoints removed in simplified schema
 
-# Get new responses since last call
-@app.route('/responses/new', methods=['GET'])
-def get_new_responses():
-    last_time = get_latest_query_time()
-    query = '''
-    SELECT r.*, u.username, u.status
-    FROM responses r
-    LEFT JOIN users u ON r.user_id = u.id
-    WHERE r.submission_time IS NOT NULL
-    '''
 
-    if last_time:
-        query += ' AND r.submission_time > %s'
-        result = db_operation(query, [last_time], fetch_all=True)
-    else:
-        result = db_operation(query, fetch_all=True)
-
-    append_latest_query_time()
-    return jsonify(result if result else [])
-
-# iOS App specific endpoints
-@app.route('/workspaces', methods=['GET'])
-def get_workspaces():
-    query = 'SELECT * FROM workspaces ORDER BY created_at DESC'
-    result = db_operation(query, fetch_all=True)
-    return jsonify({"workspaces": result if result else []})
-
-@app.route('/workspaces', methods=['POST'])
-def create_workspace():
-    data = request.json
-    # Fetch developer id by email
-    dev_email = data.get('developer', '')
-    dev_id = None
-    if dev_email:
-        dev_query = 'SELECT id FROM users_updated WHERE email = %s'
-        dev_result = db_operation(dev_query, [dev_email], fetch_one=True)
-        if dev_result:
-            dev_id = dev_result['id']
-    developer_value = dev_id if dev_id else dev_email
-    import json
-
-    # Add mandatory dropdown question to the beginning of the questions list
-    area_question = {
-        "text": "Which general area on campus are you reporting from?",
-        "type": "dropdown",
-        "options": [
-            "Cazenove",
-            "Pomeroy",
-            "Shafer",
-            "Beebe",
-            "Bates",
-            "McAfee",
-            "Freeman",
-            "Stone Davis",
-            "Tower Court",
-            "Tower Court",
-            "Claflin",
-            "Lake House",
-            "Severance",
-            "Dower House",
-            "Weaver House (Admission Office)",
-            "Houghton Chapel",
-            "Pendleton Hall",
-            "Jewett Arts Center",
-            "Green Hall",
-            "Founders Hall",
-            "Davis Museum",
-            "Clapp Library",
-            "Science Center",
-            "Global Flora",
-            "Whitin Observatory",
-            "Modular Units",
-            "Lulu Chow Wang Campus Center",
-            "Keohane Sports Center",
-            "Acorns",
-            "Billings",
-            "Harambee House",
-            "Slater House",
-            "On the Local Motion",
-            "Chapel bus stop",
-            "Founders bus stop",
-            "TZE House",
-            "ZA House",
-            "French House",
-            "Casa Cervantes",
-            "Diana Chapman Walsh Alumnae Hall",
-            "Stone Health Center"
-        ]
-    }
-    questions = data.get('questions', [])
-    # Always enforce the dropdown for the area question
-    if questions and questions[0].get('text') == area_question['text']:
-        questions[0] = area_question
-    else:
-        questions = [area_question] + questions
-
-    # Get main question and main data type from request data
-    main_question = data.get('main_question', '')
-    main_data_type = data.get('main_data_type', '')
-    print(f"[DEBUG] Workspace creation - main_question: '{main_question}', main_data_type: '{main_data_type}'")
-
-    # Insert main question after area question if not already present
-    if main_question:
-        # Check if main question is already in questions (by text)
-        found = any(q['text'] == main_question for q in questions)
-        if not found and main_question != area_question['text']:
-            # Insert as second question
-            questions = [questions[0], {"text": main_question, "type": "text"}] + questions[1:]
-        elif found:
-            # Move main question to second position if not area question
-            idx = next((i for i, q in enumerate(questions) if q['text'] == main_question), None)
-            if idx is not None and idx != 1 and main_question != area_question['text']:
-                q = questions.pop(idx)
-                questions = [questions[0], q] + questions[1:]
-    questions_json = json.dumps(questions)
-
-    anchor_question = data.get('anchor_question', '')
-    query = '''
-        INSERT INTO workspaces (id, name, description, developer, questions, main_question, anchor_question, main_data_type)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    '''
-    workspace_result = db_operation(query, [
-        data['id'],
-        data['name'],
-        data.get('description', ''),
-        developer_value,
-        questions_json,
-        main_question,
-        anchor_question,
-        main_data_type
-    ])
-    if workspace_result:
-        print(f"[DEBUG] Workspace created successfully with main question: '{main_question}'")
-        table_result = create_workspace_response_table(data['id'], questions)
-        if table_result:
-            return jsonify({
-                "success": True,
-                "data": data,
-                "message": f"Workspace created and response table 'workspace_{data['id']}_responses' created successfully"
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "error": "Workspace created but failed to create response table"
-            })
-    else:
-        return jsonify({
-            "success": False,
-            "error": "Failed to create workspace"
-        })
-
-@app.route('/workspaces/<workspace_id>', methods=['GET'])
-def get_workspace(workspace_id):
-    query = 'SELECT * FROM workspaces WHERE id = %s'
-    result = db_operation(query, [workspace_id], fetch_one=True)
-    if result:
-        # Ensure questions is always a list
-        import json
-        questions = result.get('questions')
-        if isinstance(questions, str):
-            try:
-                result['questions'] = json.loads(questions)
-            except Exception:
-                result['questions'] = []
-        elif not isinstance(questions, list):
-            result['questions'] = []
-        return jsonify(result)
-    else:
-        return jsonify({'error': 'Workspace not found'}), 404
-
-@app.route('/responses/<workspace_id>', methods=['GET'])
-def get_responses_by_workspace(workspace_id):
-    table_name = f"workspace_{workspace_id}_responses"
-    query = f'''
-        SELECT * FROM {table_name}
-        ORDER BY time_task_created DESC
-    '''
-    result = db_operation(query, fetch_all=True)
-
-    return jsonify({"responses": result if result else []})
-
-@app.route('/responses/<workspace_id>', methods=['POST'])
-def add_response(workspace_id):
-    data = request.json
-    responses = data if isinstance(data, list) else [data]
-    # Fetch questions for this workspace
-    workspace_query = 'SELECT questions FROM workspaces WHERE id = %s'
-    workspace = db_operation(workspace_query, [workspace_id], fetch_one=True)
-    import json
-    from datetime import datetime
-    questions = json.loads(workspace['questions']) if workspace and 'questions' in workspace else []
-    table_name = f"workspace_{workspace_id}_responses"
-    for response in responses:
-        # Convert ISO timestamp to MySQL datetime format
-        timestamp_str = response.get('timestamp')
-        if timestamp_str:
-            try:
-                # Parse ISO string and convert to MySQL datetime format
-                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                mysql_timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
-            except:
-                # Fallback to current timestamp if parsing fails
-                mysql_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        else:
-            mysql_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        columns = ['user_id', 'time_completed', 'latitude', 'longitude']
-        values = [
-            response.get('user_id', 'unknown'),  # Include user_id
-            mysql_timestamp,  # This is when the user completed/submitted the form
-            response.get('coordinates', {}).get('latitude'),
-            response.get('coordinates', {}).get('longitude')
-        ]
-        for idx, q in enumerate(questions):
-            col = sanitize_column_name(q['text'])
-            columns.append(f"`{col}`")
-            values.append(response['answers'][idx] if idx < len(response['answers']) else None)
-        placeholders = ', '.join(['%s'] * len(values))
-        query = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
-        db_operation(query, values)
-    return jsonify({"success": True})
-
-@app.route('/tasks/<workspace_id>/<user_id>', methods=['GET'])
-def get_user_tasks(workspace_id, user_id):
-    table_name = f"workspace_{workspace_id}_responses"
-    query = f'''
-        SELECT t.*, w.name as workspace_name
-        FROM {table_name} t
-        JOIN workspaces w ON w.id = %s
-        WHERE t.user_id = %s
-    '''
-    result = db_operation(query, [workspace_id, user_id], fetch_all=True)
-    return jsonify({"tasks": result if result else []})
-
-@app.route('/tasks/<workspace_id>/<task_id>/accept', methods=['POST'])
-def accept_task(workspace_id, task_id):
-    table_name = f"workspace_{workspace_id}_responses"
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    query = f"UPDATE {table_name} SET time_task_responded = %s, task_status = %s WHERE id = %s"
-    result = db_operation(query, [now, 'accepted', task_id])
-    return jsonify({"success": result})
-
-@app.route('/tasks/<workspace_id>/<task_id>/decline', methods=['POST'])
-def decline_task(workspace_id, task_id):
-    table_name = f"workspace_{workspace_id}_responses"
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    query = f"UPDATE {table_name} SET time_task_responded = %s, task_status = %s WHERE id = %s"
-    result = db_operation(query, [now, 'declined', task_id])
-    return jsonify({"success": result})
-
-@app.route('/tasks/<workspace_id>/<task_id>/complete', methods=['POST'])
-def complete_task(workspace_id, task_id):
-    data = request.json or {}
-    latitude = data.get('latitude')
-    longitude = data.get('longitude')
-    answers = data.get('answers', [])
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    table_name = f"workspace_{workspace_id}_responses"
-
-    # Fetch questions to know which columns to update
-    workspace = db_operation('SELECT questions FROM workspaces WHERE id = %s', [workspace_id], fetch_one=True)
-    import json
-    questions = json.loads(workspace['questions']) if workspace and 'questions' in workspace else []
-
-    # Build SET clause for answers, skipping the general area column
-    set_clauses = ["time_completed = %s", "task_status = %s"]
-    values = [now, 'completed']
-    if latitude is not None:
-        set_clauses.append("latitude = %s")
-        values.append(latitude)
-    if longitude is not None:
-        set_clauses.append("longitude = %s")
-        values.append(longitude)
-    answer_idx = 0
-    for q in questions:
-        if q['text'] == 'Which general area on campus are you reporting from?':
-            continue  # Do not update this column
-        col = sanitize_column_name(q['text'])
-        if answer_idx < len(answers):
-            set_clauses.append(f"`{col}` = %s")
-            values.append(answers[answer_idx])
-            answer_idx += 1
-    values.append(task_id)
-    set_clause = ", ".join(set_clauses)
-    query = f"UPDATE {table_name} SET {set_clause} WHERE id = %s"
-    result = db_operation(query, values)
-    return jsonify({"success": result})
-
-@app.route('/users/<user_id>/join_workspace', methods=['POST'])
-def join_workspace(user_id):
-    data = request.json
-    workspace_id = data.get('workspace_id')
-    if not workspace_id:
-        return jsonify({'success': False, 'error': 'Missing workspace_id'}), 400
-
-    # Save anchor question answer if provided
-    anchor_answer = data.get('anchor_answer')
-    if anchor_answer:
-        try:
-            # Get current user data including existing anchor answers
-            user_query = 'SELECT workspaces, anchor_answers FROM users_updated WHERE id = %s'
-            user_result = db_operation(user_query, [user_id], fetch_one=True)
-
-            if not user_result:
-                return jsonify({'success': False, 'error': 'User not found'}), 404
-
-            # Parse existing workspaces and anchor answers
-            workspaces = []
-            anchor_answers = {}
-
-            if user_result.get('workspaces'):
-                try:
-                    if isinstance(user_result['workspaces'], str):
-                        workspaces = json.loads(user_result['workspaces'])
-                    else:
-                        workspaces = user_result['workspaces']
-                except Exception:
-                    workspaces = []
-
-            if user_result.get('anchor_answers'):
-                try:
-                    if isinstance(user_result['anchor_answers'], str):
-                        anchor_answers = json.loads(user_result['anchor_answers'])
-                    else:
-                        anchor_answers = user_result['anchor_answers']
-                except Exception:
-                    anchor_answers = {}
-
-            # Add the new anchor answer
-            anchor_answers[workspace_id] = anchor_answer
-
-            # Update user with new anchor answers
-            update_query = 'UPDATE users_updated SET anchor_answers = %s WHERE id = %s'
-            result = db_operation(update_query, [json.dumps(anchor_answers), user_id])
-
-            if result:
-                print(f"[AnchorAnswer] Successfully saved anchor answer for user {user_id} in workspace {workspace_id}")
-            else:
-                print(f"[AnchorAnswer] Failed to save anchor answer for user {user_id}")
-
-        except Exception as e:
-            print(f"[AnchorAnswer] Error saving anchor answer: {e}")
-            # Continue with workspace join even if anchor answer fails
-
-    # Fetch current workspaces
-    user = db_operation('SELECT workspaces FROM users_updated WHERE id = %s', [user_id], fetch_one=True)
-    if not user:
-        return jsonify({'success': False, 'error': 'User not found'}), 404
-
-    workspaces = []
-    if user.get('workspaces'):
-        try:
-            workspaces = json.loads(user['workspaces'])
-        except:
-            workspaces = []
-
-    if workspace_id not in workspaces:
-        workspaces.append(workspace_id)
-        # Save updated workspaces
-        db_operation('UPDATE users_updated SET workspaces = %s WHERE id = %s', [json.dumps(workspaces), user_id])
-
-    return jsonify({'success': True, 'message': 'Successfully joined workspace'})
-
-@app.route('/workspaces/<workspace_id>/anchor-question', methods=['GET'])
-def get_workspace_anchor_question(workspace_id):
-    query = 'SELECT name, anchor_question, main_data_type FROM workspaces WHERE id = %s'
-    result = db_operation(query, [workspace_id], fetch_one=True)
-    if result:
-        return jsonify({
-            'workspace_name': result['name'],
-            'anchor_question': result.get('anchor_question', ''),
-            'main_data_type': result.get('main_data_type', '')
-        })
-    else:
-        return jsonify({'error': 'Workspace not found'}), 404
-
-@app.route('/users/<user_id>/anchor-answers', methods=['GET'])
-def get_user_anchor_answers(user_id):
+# New simplified endpoints for Lexi responses
+@app.route('/lexi/responses', methods=['POST'])
+def create_lexi_response():
     try:
-        # Get user's anchor answers from the JSON field
-        query = 'SELECT anchor_answers FROM users_updated WHERE id = %s'
-        result = db_operation(query, [user_id], fetch_one=True)
+        create_lexi_tables()
+        data = request.json or {}
 
-        if not result:
-            return jsonify({'anchor_answers': {}})
+        # Required fields
+        user_id = (data.get('user_id') or '').strip()
+        general_area = (data.get('general_area') or '').strip()
+        specific_location = (data.get('specific_location') or '').strip()
+        language_spoken = (data.get('language_spoken') or '').strip()
 
-        # Parse anchor answers JSON
-        anchor_answers = {}
-        if result.get('anchor_answers'):
-            try:
-                if isinstance(result['anchor_answers'], str):
-                    anchor_answers = json.loads(result['anchor_answers'])
-                else:
-                    anchor_answers = result['anchor_answers']
-            except Exception:
-                anchor_answers = {}
+        # Validate
+        if not user_id or not general_area or not specific_location or not language_spoken:
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+        if general_area not in LEXI_AREAS:
+            # Allow 'Other' to carry any string via specific_location; map to 'Other'
+            general_area = 'Other'
 
-        return jsonify({'anchor_answers': anchor_answers})
+        # Numeric required
+        try:
+            num_speakers = int(data.get('num_speakers'))
+        except Exception:
+            return jsonify({"success": False, "error": "num_speakers must be an integer"}), 400
+        if num_speakers < 0:
+            return jsonify({"success": False, "error": "num_speakers must be >= 0"}), 400
+
+        # Checkbox required
+        was_part = data.get('was_part_of_conversation')
+        if not isinstance(was_part, bool):
+            return jsonify({"success": False, "error": "was_part_of_conversation must be boolean"}), 400
+
+        followup_details = data.get('followup_details')
+        comfortable = data.get('comfortable_to_ask_more')
+        go_up = data.get('go_up_to_speakers')
+        if go_up not in (None, 'Yes', 'No', "I don't know"):
+            return jsonify({"success": False, "error": "go_up_to_speakers must be Yes, No, or I don't know"}), 400
+
+        # Determination methods required (array of strings within allowed + optional 'Other')
+        methods = data.get('determination_methods') or []
+        if not isinstance(methods, list) or not methods:
+            return jsonify({"success": False, "error": "determination_methods must be a non-empty array"}), 400
+        methods_clean = []
+        for m in methods:
+            if not isinstance(m, str):
+                continue
+            if m in LEXI_DETERMINATION_OPTIONS:
+                methods_clean.append(m)
+            elif m.lower().startswith('other'):
+                methods_clean.append('Other')
+        if not methods_clean:
+            return jsonify({"success": False, "error": "determination_methods contain no valid values"}), 400
+        determination_other_text = data.get('determination_other_text')
+
+        # Coordinates optional
+        latitude = data.get('latitude')
+        longitude = data.get('longitude')
+
+        import json as _json
+        q = (
+            """
+            INSERT INTO lexi (
+                user_id, general_area, specific_location, language_spoken,
+                num_speakers, was_part_of_conversation, followup_details,
+                comfortable_to_ask_more, go_up_to_speakers, determination_methods, determination_other_text,
+                latitude, longitude,
+                speaker_said_audio_url, speaker_origin, speaker_cultural_background,
+                speaker_dialect, speaker_context, speaker_proficiency,
+                speaker_gender_identity, speaker_gender_other_text,
+                speaker_academic_level, additional_comments, outstanding_questions
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """
+        )
+        params = [
+            user_id,
+            general_area,
+            specific_location,
+            language_spoken,
+            num_speakers,
+            1 if was_part else 0,
+            followup_details,
+            comfortable,
+            go_up,
+            _json.dumps(methods_clean),
+            determination_other_text,
+            latitude,
+            longitude,
+            data.get('speaker_said_audio_url'),
+            data.get('speaker_origin'),
+            data.get('speaker_cultural_background'),
+            data.get('speaker_dialect'),
+            data.get('speaker_context'),
+            data.get('speaker_proficiency'),
+            data.get('speaker_gender_identity'),
+            data.get('speaker_gender_other_text'),
+            data.get('speaker_academic_level'),
+            data.get('additional_comments'),
+            data.get('outstanding_questions'),
+        ]
+        ok = db_operation(q, params)
+        return jsonify({"success": bool(ok)})
     except Exception as e:
-        print(f"[AnchorAnswer] Error getting anchor answers: {e}")
-        return jsonify({'error': 'Failed to get anchor answers'}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/lexi/responses', methods=['GET'])
+def list_lexi_responses():
+    try:
+        q = "SELECT * FROM lexi ORDER BY created_at DESC"
+        rows = db_operation(q, fetch_all=True) or []
+        # Normalize types
+        for r in rows:
+            r['was_part_of_conversation'] = bool(r.get('was_part_of_conversation'))
+            try:
+                if isinstance(r.get('determination_methods'), str):
+                    import json as _json
+                    r['determination_methods'] = _json.loads(r['determination_methods'])
+            except Exception:
+                r['determination_methods'] = []
+        return jsonify({"responses": rows})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/lexi/users', methods=['POST'])
+def upsert_lexi_user():
+    try:
+        create_lexi_tables()
+        data = request.json or {}
+        name = (data.get('name') or '').strip()
+        email = (data.get('email') or '').strip().lower()
+        if not name or not email:
+            return jsonify({"success": False, "error": "Missing name or email"}), 400
+        import json as _json
+        import uuid
+        user = db_operation('SELECT * FROM users_lexi WHERE email = %s', [email], fetch_one=True)
+        user_id = user['user_id'] if user else str(uuid.uuid4())
+        anchor_answer = data.get('anchor_answer')
+        if anchor_answer is None:
+            anchor_answer_json = _json.dumps([])
+        else:
+            if not isinstance(anchor_answer, list):
+                return jsonify({"success": False, "error": "anchor_answer must be array of strings"}), 400
+            anchor_answer_json = _json.dumps(anchor_answer)
+        q = (
+            '''
+            INSERT INTO users_lexi (user_id, name, email, anchor_answer)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                name = VALUES(name),
+                anchor_answer = VALUES(anchor_answer)
+            '''
+        )
+        ok = db_operation(q, [user_id, name, email, anchor_answer_json])
+        if ok:
+            return jsonify({"success": True, "user": {"user_id": user_id, "name": name, "email": email, "anchor_answer": anchor_answer or []}})
+        return jsonify({"success": False})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/lexi/users/<email>', methods=['GET'])
+def get_lexi_user(email):
+    try:
+        user = db_operation('SELECT * FROM users_lexi WHERE email = %s', [email], fetch_one=True)
+        if not user:
+            return jsonify({}), 404
+        try:
+            import json as _json
+            if isinstance(user.get('anchor_answer'), str):
+                user['anchor_answer'] = _json.loads(user['anchor_answer'])
+        except Exception:
+            user['anchor_answer'] = []
+        return jsonify(user)
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/lexi/users/<email>/consent', methods=['POST'])
+def update_consent(email):
+    try:
+        data = request.json or {}
+        consent = 1 if bool(data.get('consent')) else 0
+        ok = db_operation('UPDATE users_lexi SET consent_given = %s WHERE email = %s', [consent, email])
+        return jsonify({"success": bool(ok)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# All task endpoints disabled in simplified mode
+
+# Workspace join/anchor endpoints disabled in simplified mode
+
+# Anchor question endpoint disabled in simplified mode
+
+# Anchor answers endpoint disabled in simplified mode
 
 @app.route('/format-answers', methods=['POST'])
 def format_answers():
@@ -940,74 +781,6 @@ def reset_typo_counter():
         return jsonify({'success': True, 'message': 'Daily counter reset'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-# COMMENTED OUT - Sentiment analysis removed for proximity-only approach
-# @app.route('/format-answers-sentiment', methods=['POST'])
-# def format_answers_sentiment():
-#     """Format answers using sentiment analysis instead of Gemini"""
-#     try:
-#         data = request.json
-#         text = data.get('text', '')
-#         main_data_type = data.get('main_data_type', '')
-#
-#         print(f"[DEBUG] Sentiment format_answers called with text: '{text}', main_data_type: '{main_data_type}'")
-#
-#         if not text:
-#             return jsonify({'formatted_text': '', 'error': 'No text provided'})
-#
-#         # Use ML-based sentiment analysis to extract and format entities
-#         entities = sentiment_analyzer.extract_entities_ml(text)
-#
-#         # Calculate comprehensive ML-based scores
-#         comprehensive_scores = sentiment_analyzer.calculate_comprehensive_score(text)
-#
-#         # Format entities as comma-separated list
-#         entity_names = [entity['entity'] for entity in entities] if entities else []
-#         formatted_text = ', '.join(entity_names) if entity_names else text
-#
-#         result = {
-#             'formatted_text': formatted_text,
-#             'entities': entities,
-#             'comprehensive_scores': comprehensive_scores,
-#             'method': 'ml_sentiment_analysis'
-#         }
-#
-#         print(f"[DEBUG] Sentiment format_answers result: {result}")
-#         return jsonify(result)
-#
-#     except Exception as e:
-#         print(f"[DEBUG] Error in sentiment format_answers: {e}")
-#         return jsonify({
-#             'formatted_text': text,
-#             'error': str(e),
-#             'method': 'sentiment_analysis_fallback'
-#         })
-
-# COMMENTED OUT - Sentiment analysis removed for proximity-only approach
-# @app.route('/assign-tasks-sentiment', methods=['POST'])
-# def assign_tasks_sentiment():
-#     """Manually trigger sentiment-based task assignment"""
-#     try:
-#         print("[DEBUG] Manual sentiment task assignment triggered")
-#
-#         # Import the integrated task assignment module
-#         import task_assignment
-#
-#         # Trigger sentiment-based assignment
-#         task_assignment.run_sentiment_based_assignment()
-#
-#         return jsonify({
-#             'success': True,
-#             'message': 'Sentiment-based task assignment completed',
-#             'method': 'sentiment_analysis'
-#         })
-#     except Exception as e:
-#         print(f"[DEBUG] Error in manual sentiment task assignment: {e}")
-#         return jsonify({
-#             'success': False,
-#             'error': str(e),
-#             'method': 'sentiment_analysis'
-#         }), 500
 
 # Start server
 if __name__ == "__main__":

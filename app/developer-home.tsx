@@ -1,5 +1,4 @@
 import { useAuth } from '@/context/auth';
-import { api } from '@/utils/api';
 import { Poppins_400Regular, Poppins_600SemiBold, useFonts } from '@expo-google-fonts/poppins';
 import { Ionicons } from '@expo/vector-icons';
 import { Link, useRouter } from 'expo-router';
@@ -31,17 +30,7 @@ export default function DeveloperHome() {
   // In Lexi-only mode, redirect if this screen is visited
   useEffect(() => {
     const go = async () => {
-      try {
-        const data = await api.getWorkspaces();
-        const lexiWorkspace = (data?.workspaces || []).find((ws: any) =>
-          typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
-        );
-        if (lexiWorkspace?.id) {
-          router.replace(`/workspace/${lexiWorkspace.id}`);
-        }
-      } catch (e) {
-        // ignore
-      }
+      // No workspaces in Lexi-only mode
     };
     go();
   }, [router]);
@@ -52,27 +41,8 @@ export default function DeveloperHome() {
   });
 
   const fetchWorkspaces = async () => {
-    if (user?.id) {
-      try {
-        const fetchedWorkspaces = await api.getWorkspaces();
-        if (fetchedWorkspaces && fetchedWorkspaces.workspaces) {
-          const developerWorkspaces = fetchedWorkspaces.workspaces.filter(
-            (w: Workspace) => w.developer === user.id
-          );
-          setWorkspaces(developerWorkspaces);
-        } else {
-          setWorkspaces([]);
-        }
-      } catch (error) {
-        console.error('Failed to fetch workspaces:', error);
-        setWorkspaces([]);
-      } finally {
-        // Reduce loading time for better UX
-        setTimeout(() => setLoading(false), 300);
-      }
-    } else {
-      setLoading(false);
-    }
+    setWorkspaces([]);
+    setLoading(false);
   };
 
   useEffect(() => {

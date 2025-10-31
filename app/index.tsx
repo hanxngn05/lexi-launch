@@ -1,6 +1,5 @@
 import LoginForm from "@/components/LoginForm";
 import { useAuth } from "@/context/auth";
-import { api } from "@/utils/api";
 import { useRouter } from "expo-router";
 import { useEffect } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
@@ -12,21 +11,17 @@ export default function Index() {
   useEffect(() => {
     const redirectIfLoggedIn = async () => {
       if (user) {
-        try {
-          const workspacesData: any = await api.getWorkspaces();
-          const lexiWorkspace = (workspacesData?.workspaces || []).find((ws: any) =>
-            typeof ws?.name === 'string' && ws.name.toLowerCase().includes('lexi')
-          );
-          if (lexiWorkspace?.id) {
-            router.replace(`/workspace/${lexiWorkspace.id}`);
-          }
-        } catch (e) {
-          // ignore
-        }
+        const consentGiven = Boolean((user as any)?.consent_given);
+        router.replace(consentGiven ? '/workspace/lexi' : '/consent');
       }
     };
     redirectIfLoggedIn();
   }, [user, router]);
+
+  // Always show LoginForm when no user, even if loading (prevents remount/reset of local state)
+  if (!user) {
+    return <LoginForm />;
+  }
 
   if (isLoading) {
     return (
@@ -34,10 +29,6 @@ export default function Index() {
         <ActivityIndicator size="large" color="#4A90E2" />
       </View>
     );
-  }
-
-  if (!user) {
-    return <LoginForm />;
   }
 
   return (
