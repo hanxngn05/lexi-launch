@@ -18,9 +18,7 @@ export const REFRESH_TOKEN_MAX_AGE = 30*24*3600; // 30 days in secs
 // Refresh Token Constants
 export const REFRESH_BEFORE_EXPIRY_SEC = 60;
 
-// Google OAuth Constants
-export const GOOGLE_CLIENT_ID = "1029128656486-sj55218ijb6k0lgi77mhgc995rlvctpq.apps.googleusercontent.com";
-// export const GOOGLE_CLIENT_SECRET = "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";
+// Google OAuth removed (OTP-only auth)
 
 // Environment Constants
 export const BASE_URL = config?.extra?.baseUrl || 'http://10.7.2.99:8081';

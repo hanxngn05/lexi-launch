@@ -1,11 +1,9 @@
 import Constants from 'expo-constants';
-import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
 import * as React from "react";
 import { api } from '../utils/api';
 
-WebBrowser.maybeCompleteAuthSession();
+// No OAuth flows; OTP-only
 
 export type AuthUser = {
   id: string;
@@ -57,17 +55,7 @@ export const AuthProvider = ({ children }: {children: React.ReactNode }) => {
   const [error, setError] = React.useState<Error | null>(null);
   const router = useRouter();
 
-  // Warm up SFSafariViewController on iOS to reduce flakiness
-  React.useEffect(() => {
-    WebBrowser.warmUpAsync();
-    const sub = Linking.addEventListener('url', ({ url }) => {
-      console.log('Linking url received:', url);
-    });
-    return () => {
-      WebBrowser.coolDownAsync();
-      sub.remove();
-    };
-  }, []);
+  // No OAuth warmups needed
 
   const checkUserExists = async (email: string) => {
     try {
